@@ -24,8 +24,9 @@ jobs:
 
       - name: Install WiX Toolset
         run: |
-          choco install wixtoolset --version=3.14.1 --no-progress
-          echo "C:\Program Files (x86)\WiX Toolset v3.14\bin" >> $env:GITHUB_PATH
+          choco install wixtoolset --no-progress
+          $wixPath = (Get-ChildItem "C:\Program Files (x86)\WiX Toolset v3.*\bin" | Select-Object -First 1).FullName
+          echo "$wixPath" >> $env:GITHUB_PATH
 
       - name: Install cargo-wix
         run: cargo install cargo-wix
