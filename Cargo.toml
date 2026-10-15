@@ -3,6 +3,10 @@ name = "edge-agent"
 version = "0.2.0"
 description = "Edge data collection agent: ONVIF camera discovery, snapshot, LLM analysis, HTTP push"
 edition = "2021"
+authors = ["Wendell <wendellpeng@gmail.com>"]
+
+[package.metadata.wix]
+eula = false
 
 [dependencies]
 actix-web = "4"
