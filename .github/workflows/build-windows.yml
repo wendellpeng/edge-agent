@@ -1,0 +1,65 @@
+name: Build Windows Installer
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install WiX Toolset
+        run: |
+          choco install wixtoolset --version=3.14.1 --no-progress
+          echo "C:\Program Files (x86)\WiX Toolset v3.14\bin" >> $env:GITHUB_PATH
+
+      - name: Install cargo-wix
+        run: cargo install cargo-wix
+
+      - name: Build Frontend
+        working-directory: ./frontend
+        run: |
+          npm install
+          npm run build
+
+      - name: Build Windows Binary
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Build MSI Installer
+        run: cargo wix --target x86_64-pc-windows-msvc --nocapture
+
+      - name: Upload MSI Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: edge-agent-windows-msi
+          path: target/wix/*.msi
+
+      - name: Upload EXE Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: edge-agent-windows-exe
+          path: target/x86_64-pc-windows-msvc/release/edge-agent.exe
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/wix/*.msi
+            target/x86_64-pc-windows-msvc/release/edge-agent.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
