@@ -567,3 +567,335 @@ pub async fn list_channels(path: web::Path<i64>) -> Result<HttpResponse> {
 
     Ok(HttpResponse::Ok().json(ApiResponse::ok(channels)))
 }
+
+// ===================== 设备接入向导 =====================
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ProbeRequest {
+    pub ip: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ProbeResult {
+    pub ip: String,
+    pub ports_open: Vec<u16>,
+    pub onvif_endpoint: Option<String>,
+    pub rtsp_accessible: bool,
+    pub guessed_brand: Option<String>,
+    pub candidates: Vec<StreamCandidate>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct StreamCandidate {
+    pub candidate_type: String, // "onvif" | "rtsp"
+    pub channel: i32,
+    pub endpoint: Option<String>, // ONVIF endpoint
+    pub url: Option<String>,      // RTSP URL
+    pub stream_type: String,      // "主码流" | "子码流"
+}
+
+#[post("/api/tools/probe")]
+pub async fn probe_device(body: web::Json<ProbeRequest>) -> Result<HttpResponse> {
+    let ip = &body.ip;
+    log::info!("开始探测设备: {}", ip);
+
+    let mut ports_open = Vec::new();
+    let mut onvif_endpoint = None;
+    let mut rtsp_accessible = false;
+    let mut guessed_brand = None;
+    let mut candidates: Vec<StreamCandidate> = Vec::new();
+
+    // 1. 扫描常见端口
+    let ports = vec![80u16, 8000, 8080, 554];
+    for port in &ports {
+        let addr = format!("{}:{}", ip, port);
+        if let Ok(Ok(_)) = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            tokio::net::TcpStream::connect(&addr)
+        ).await {
+            ports_open.push(*port);
+            log::info!("端口开放: {}:{}", ip, port);
+        }
+    }
+
+    // 2. 尝试 ONVIF 探测（HTTP 端口）
+    for port in &ports_open {
+        if *port == 554 { continue; }
+        let url = format!("http://{}:{}/onvif/device_service", ip, port);
+        if let Ok(true) = is_onvif_endpoint(&url).await {
+            onvif_endpoint = Some(url.clone());
+            log::info!("发现 ONVIF 端点: {}", url);
+
+            // ONVIF 设备：添加 ONVIF 候选（通道未知，待枚举）
+            candidates.push(StreamCandidate {
+                candidate_type: "onvif".to_string(),
+                channel: 1,
+                endpoint: Some(url),
+                url: None,
+                stream_type: "主码流".to_string(),
+            });
+            break;
+        }
+    }
+
+    // 3. RTSP 探测（554 端口）
+    if ports_open.contains(&554) {
+        if let Ok(true) = rtsp_options_probe(ip, 554).await {
+            rtsp_accessible = true;
+            log::info!("RTSP 服务可达: {}:554", ip);
+        }
+    }
+
+    // 4. 猜测品牌（基于 HTTP 响应或 RTSP Server 头）
+    if let Some(brand) = guess_brand(ip, &ports_open).await {
+        guessed_brand = Some(brand.clone());
+        log::info!("猜测品牌: {}", brand);
+    }
+
+    // 5. 生成 RTSP 候选 URL
+    if rtsp_accessible {
+        let brands_to_try: Vec<String> = if let Some(ref b) = guessed_brand {
+            vec![b.clone(), "generic".to_string()]
+        } else {
+            vec!["hikvision".to_string(), "dahua".to_string(), "generic".to_string()]
+        };
+
+        for brand in brands_to_try {
+            if let Some(tmpl) = rtsp_templates().iter().find(|t| t.brand == brand) {
+                // 尝试前 4 个通道
+                for ch in 1..=4 {
+                    let url = tmpl.main_stream
+                        .replace("{user}", "{USER}")
+                        .replace("{pass}", "{PASS}")
+                        .replace("{ip}", ip)
+                        .replace("{channel}", &ch.to_string());
+
+                    candidates.push(StreamCandidate {
+                        candidate_type: "rtsp".to_string(),
+                        channel: ch,
+                        endpoint: None,
+                        url: Some(url),
+                        stream_type: "主码流".to_string(),
+                    });
+                }
+                break; // 只使用第一个匹配的品牌模板
+            }
+        }
+    }
+
+    Ok(HttpResponse::Ok().json(ApiResponse::ok(ProbeResult {
+        ip: ip.clone(),
+        ports_open,
+        onvif_endpoint,
+        rtsp_accessible,
+        guessed_brand,
+        candidates,
+    })))
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct VerifyRequest {
+    pub ip: String,
+    pub username: String,
+    pub password: String,
+    pub candidates: Vec<StreamCandidate>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct VerifyResult {
+    pub channel: i32,
+    pub candidate_type: String,
+    pub url: String,
+    pub success: bool,
+    pub snapshot_base64: Option<String>,
+    pub error: Option<String>,
+}
+
+#[post("/api/tools/verify")]
+pub async fn verify_candidates(body: web::Json<VerifyRequest>) -> Result<HttpResponse> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+
+    let mut results = Vec::new();
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(4));
+
+    let mut handles = Vec::new();
+    for cand in &body.candidates {
+        let user = body.username.clone();
+        let pass = body.password.clone();
+        let cand = cand.clone();
+        let sem = semaphore.clone();
+
+        let handle = tokio::spawn(async move {
+            let _permit = sem.acquire().await.ok()?;
+
+            let url = if cand.candidate_type == "rtsp" {
+                cand.url.as_ref()?.replace("{USER}", &user).replace("{PASS}", &pass)
+            } else {
+                // ONVIF 类型暂时跳过（需要先有 endpoint 再枚举）
+                return None;
+            };
+
+            log::info!("验证候选: {} 通道 {} — {}", cand.candidate_type, cand.channel, url);
+
+            let cache_dir = dirs::cache_dir()
+                .unwrap_or_else(|| std::env::temp_dir())
+                .join("com.edgeagent.app/snapshots");
+            std::fs::create_dir_all(&cache_dir).ok()?;
+
+            let filename = format!("verify_{}_{}.jpg", cand.channel, Local::now().format("%H%M%S"));
+            let path = cache_dir.join(&filename);
+
+            let output = tokio::process::Command::new("ffmpeg")
+                .args(&[
+                    "-y", "-rtsp_transport", "tcp",
+                    "-i", &url,
+                    "-vframes", "1",
+                    "-q:v", "2",
+                    "-f", "image2",
+                    path.to_str()?,
+                ])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output().await;
+
+            let result = match output {
+                Ok(out) if out.status.success() => {
+                    match std::fs::read(&path) {
+                        Ok(bytes) => {
+                            let b64 = STANDARD.encode(&bytes);
+                            VerifyResult {
+                                channel: cand.channel,
+                                candidate_type: cand.candidate_type.clone(),
+                                url: url.clone(),
+                                success: true,
+                                snapshot_base64: Some(b64),
+                                error: None,
+                            }
+                        }
+                        Err(e) => VerifyResult {
+                            channel: cand.channel,
+                            candidate_type: cand.candidate_type.clone(),
+                            url: url.clone(),
+                            success: false,
+                            snapshot_base64: None,
+                            error: Some(format!("读取截图失败: {}", e)),
+                        }
+                    }
+                }
+                Ok(out) => {
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    VerifyResult {
+                        channel: cand.channel,
+                        candidate_type: cand.candidate_type.clone(),
+                        url: url.clone(),
+                        success: false,
+                        snapshot_base64: None,
+                        error: Some(format!("ffmpeg 失败: {}", stderr)),
+                    }
+                }
+                Err(e) => VerifyResult {
+                    channel: cand.channel,
+                    candidate_type: cand.candidate_type.clone(),
+                    url: url.clone(),
+                    success: false,
+                    snapshot_base64: None,
+                    error: Some(format!("执行 ffmpeg 失败: {}。请确认系统已安装 ffmpeg", e)),
+                }
+            };
+
+            std::fs::remove_file(&path).ok();
+            Some(result)
+        });
+        handles.push(handle);
+    }
+
+    for h in handles {
+        if let Ok(Some(r)) = h.await {
+            results.push(r);
+        }
+    }
+
+    // 按通道排序
+    results.sort_by_key(|r| r.channel);
+
+    Ok(HttpResponse::Ok().json(ApiResponse::ok(results)))
+}
+
+/// 猜测设备品牌
+async fn guess_brand(ip: &str, ports: &[u16]) -> Option<String> {
+    // 尝试 HTTP 响应头
+    for port in ports {
+        if *port == 554 { continue; }
+        let url = format!("http://{}:{}/", ip, port);
+        if let Ok(resp) = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .unwrap_or_default()
+            .get(&url)
+            .send().await
+        {
+            let headers = resp.headers();
+            if let Some(server) = headers.get("server").and_then(|v| v.to_str().ok()) {
+                let server_lower = server.to_lowercase();
+                if server_lower.contains("hikvision") || server_lower.contains("dvr") || server_lower.contains("nvr") {
+                    return Some("hikvision".to_string());
+                }
+                if server_lower.contains("dahua") {
+                    return Some("dahua".to_string());
+                }
+                if server_lower.contains("tp-link") || server_lower.contains("tplink") {
+                    return Some("tp-link".to_string());
+                }
+            }
+
+            // 尝试读取响应体找品牌标识
+            if let Ok(text) = resp.text().await {
+                let text_lower = text.to_lowercase();
+                if text_lower.contains("hikvision") {
+                    return Some("hikvision".to_string());
+                }
+                if text_lower.contains("dahua") {
+                    return Some("dahua".to_string());
+                }
+                if text_lower.contains("uniview") || text_lower.contains("unv") {
+                    return Some("uniview".to_string());
+                }
+            }
+        }
+    }
+
+    // 尝试 RTSP Server 头
+    if ports.contains(&554) {
+        if let Ok(true) = rtsp_options_probe(ip, 554).await {
+            // 可以进一步解析 RTSP DESCRIBE 响应，但 OPTIONS 就够了
+        }
+    }
+
+    None
+}
+
+/// 检查 URL 是否为 ONVIF 端点
+async fn is_onvif_endpoint(url: &str) -> Result<bool, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .unwrap_or_default();
+
+    let soap_body = r#"<?xml version="1.0" encoding="UTF-8"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:tds="http://www.onvif.org/ver10/device/wsdl">
+  <s:Body><tds:GetDeviceInformation/></s:Body>
+</s:Envelope>"#;
+
+    match client.post(url)
+        .header("Content-Type", "application/soap+xml; charset=utf-8")
+        .header("SOAPAction", "http://www.onvif.org/ver10/device/wsdl/GetDeviceInformation")
+        .body(soap_body)
+        .send().await
+    {
+        Ok(resp) => {
+            let text = resp.text().await.unwrap_or_default();
+            Ok(text.contains("Envelope") || text.contains("soap"))
+        }
+        Err(_) => Ok(false),
+    }
+}
