@@ -29,7 +29,7 @@ impl TaskEngine {
 
     pub async fn start(&self) -> Result<(), String> {
         {
-            let mut sched = self.scheduler.lock().await;
+            let sched = self.scheduler.lock().await;
             sched.start().await.map_err(|e| e.to_string())?;
         }
         self.reload_jobs().await?;

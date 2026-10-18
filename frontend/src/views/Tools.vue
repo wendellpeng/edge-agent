@@ -262,15 +262,17 @@ onMounted(() => {
       <div class="modal">
         <h3>{{ editing ? "编辑工具" : "添加工具" }}</h3>
         <div class="form-grid">
+          <!-- 第一行：名称 + 位置 -->
           <div class="field"><label>名称</label><input v-model="form.name" /></div>
+          <div class="field"><label>位置</label><input v-model="form.location" placeholder="如：仓库A-货架区" /></div>
+          <!-- 第二行：RTSP URL -->
           <div class="field full">
             <label>RTSP URL</label>
             <input v-model="form.endpoint" placeholder="rtsp://admin:pass@192.168.0.104:554/Streaming/Channels/101" />
           </div>
-          <div class="field"><label>位置</label><input v-model="form.location" placeholder="如：仓库A-货架区" /></div>
+          <!-- 第三行：账号 + 密码 -->
           <div class="field"><label>账号</label><input v-model="form.username" placeholder="admin" /></div>
           <div class="field"><label>密码</label><input v-model="form.password" type="password" placeholder="密码" /></div>
-          <div class="field"><label>启用</label><input type="checkbox" v-model="form.enabled" /></div>
         </div>
         <div class="modal-actions">
           <button @click="save">保存</button>

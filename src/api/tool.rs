@@ -160,7 +160,7 @@ async fn scan_rtsp_554(timeout_secs: u64) -> Vec<CameraDiscovery> {
     }
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(100));
-    let scan_timeout = std::time::Duration::from_secs(timeout_secs);
+    let _scan_timeout = std::time::Duration::from_secs(timeout_secs);
     let mut all_results = Vec::new();
 
     for ip in local_ips {
@@ -903,83 +903,4 @@ pub async fn verify_rtsp_url_endpoint(body: web::Json<VerifyUrlRequest>) -> Resu
         snapshot_base64: snapshot,
         error,
     })))
-}
-
-/// 猜测设备品牌
-async fn guess_brand(ip: &str, ports: &[u16]) -> Option<String> {
-    // 尝试 HTTP 响应头
-    for port in ports {
-        if *port == 554 { continue; }
-        let url = format!("http://{}:{}/", ip, port);
-        if let Ok(resp) = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(2))
-            .build()
-            .unwrap_or_default()
-            .get(&url)
-            .send().await
-        {
-            let headers = resp.headers();
-            if let Some(server) = headers.get("server").and_then(|v| v.to_str().ok()) {
-                let server_lower = server.to_lowercase();
-                if server_lower.contains("hikvision") || server_lower.contains("dvr") || server_lower.contains("nvr") {
-                    return Some("hikvision".to_string());
-                }
-                if server_lower.contains("dahua") {
-                    return Some("dahua".to_string());
-                }
-                if server_lower.contains("tp-link") || server_lower.contains("tplink") {
-                    return Some("tp-link".to_string());
-                }
-            }
-
-            // 尝试读取响应体找品牌标识
-            if let Ok(text) = resp.text().await {
-                let text_lower = text.to_lowercase();
-                if text_lower.contains("hikvision") {
-                    return Some("hikvision".to_string());
-                }
-                if text_lower.contains("dahua") {
-                    return Some("dahua".to_string());
-                }
-                if text_lower.contains("uniview") || text_lower.contains("unv") {
-                    return Some("uniview".to_string());
-                }
-            }
-        }
-    }
-
-    // 尝试 RTSP Server 头
-    if ports.contains(&554) {
-        if let Ok(true) = rtsp_options_probe(ip, 554).await {
-            // 可以进一步解析 RTSP DESCRIBE 响应，但 OPTIONS 就够了
-        }
-    }
-
-    None
-}
-
-/// 检查 URL 是否为 ONVIF 端点
-async fn is_onvif_endpoint(url: &str) -> Result<bool, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
-        .build()
-        .unwrap_or_default();
-
-    let soap_body = r#"<?xml version="1.0" encoding="UTF-8"?>
-<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:tds="http://www.onvif.org/ver10/device/wsdl">
-  <s:Body><tds:GetDeviceInformation/></s:Body>
-</s:Envelope>"#;
-
-    match client.post(url)
-        .header("Content-Type", "application/soap+xml; charset=utf-8")
-        .header("SOAPAction", "http://www.onvif.org/ver10/device/wsdl/GetDeviceInformation")
-        .body(soap_body)
-        .send().await
-    {
-        Ok(resp) => {
-            let text = resp.text().await.unwrap_or_default();
-            Ok(text.contains("Envelope") || text.contains("soap"))
-        }
-        Err(_) => Ok(false),
-    }
 }

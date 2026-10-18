@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::models::PushConfig;
 use serde_json::json;
 

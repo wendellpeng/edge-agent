@@ -20,6 +20,7 @@ pub fn get_patterns() -> Vec<RtspPattern> {
 }
 
 /// 为指定参数生成候选 URL 列表
+#[allow(dead_code)]
 pub fn generate_urls(ip: &str, user: &str, pass: &str, channel: i32, patterns: &[RtspPattern]) -> Vec<(String, String)> {
     let mut urls = Vec::new();
     for p in patterns {

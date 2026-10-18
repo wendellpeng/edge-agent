@@ -35,6 +35,7 @@ pub struct Tool {
 fn default_channel() -> i32 { 1 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[allow(dead_code)]
 pub struct CredentialMeta {
     pub id: String,
     pub service: String,
@@ -43,6 +44,7 @@ pub struct CredentialMeta {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[allow(dead_code)]
 pub struct CredentialInput {
     pub id: String,
     pub service: String,
@@ -71,6 +73,7 @@ pub struct Scenario {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[allow(dead_code)]
 pub struct PushConfig {
     pub url: String,
     pub method: String,
@@ -117,6 +120,7 @@ impl<T> ApiResponse<T> {
     pub fn ok(data: T) -> Self {
         ApiResponse { success: true, data: Some(data), error: None }
     }
+    #[allow(dead_code)]
     pub fn err(msg: String) -> Self {
         ApiResponse { success: false, data: None, error: Some(msg) }
     }
