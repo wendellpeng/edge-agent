@@ -136,6 +136,9 @@ pub fn init_db() -> SqlResult<Connection> {
     // 兼容旧表：从 cameras 迁移到 tools
     migrate_cameras_to_tools(&conn)?;
 
+    // 修复已有场景中错误的 cron 表达式（缺少空格：*/4* → */4）
+    fix_cron_expressions(&conn)?;
+
     // 兼容旧表：旧 scenarios 表结构迁移
     migrate_old_scenarios(&conn)?;
 
@@ -192,5 +195,29 @@ fn migrate_old_scenarios(conn: &Connection) -> SqlResult<()> {
     conn.execute("ALTER TABLE scenarios_new RENAME TO scenarios", [])?;
     conn.execute("COMMIT", [])?;
     log::info!("scenarios 表结构迁移完成");
+    Ok(())
+}
+
+/// 修复已有场景中格式错误的 cron 表达式
+/// 例如："0 */4* * *" → "0 */4 * * *"
+fn fix_cron_expressions(conn: &Connection) -> SqlResult<()> {
+    let mut stmt = conn.prepare("SELECT id, pipeline FROM scenarios")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, i64>("id")?, row.get::<_, String>("pipeline")?))
+    })?;
+
+    for row in rows {
+        let (id, pipeline_str) = row?;
+        if pipeline_str.contains("*/4*") || pipeline_str.contains("* * * * * *") {
+            let fixed = pipeline_str
+                .replace("*/4*", "*/4 ")
+                .replace("* * * * * *", "* * * * *");
+            conn.execute(
+                "UPDATE scenarios SET pipeline = ?1 WHERE id = ?2",
+                [&fixed, &id.to_string()],
+            )?;
+            log::info!("修复场景 #{} 的 cron 表达式: {}", id, fixed);
+        }
+    }
     Ok(())
 }

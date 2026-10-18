@@ -10,7 +10,7 @@ const editing = ref(null);
 const form = ref({
   id: 0, name: "", enabled: true,
   pipeline: [
-    { node_id: "node_1", node_type: "trigger", config: { trigger_type: "cron", config: "0 */4 * * * *" } },
+    { node_id: "node_1", node_type: "trigger", config: { trigger_type: "cron", config: "0 */4 * * *" } },
     { node_id: "node_2", node_type: "tool", config: { tool_id: null } },
     { node_id: "node_3", node_type: "http_push", config: { url: "", method: "POST", timeout_secs: 30, retry_count: 3, headers: {}, image_param_name: "image", body_params: "" } },
   ],
