@@ -538,7 +538,7 @@ async fn verify_rtsp_with_transport(url: &str, channel: i32, transport: &str) ->
         .args(&[
             "-y",
             "-rtsp_transport", transport,
-            "-stimeout", "5000000", // 5秒连接超时（microseconds）
+            "-timeout", "10000000", // 10秒连接超时（microseconds，ffmpeg 8.0+ 用 timeout）
             "-i", url,
             "-vframes", "1",
             "-q:v", "2",
@@ -610,40 +610,54 @@ pub async fn probe_device(body: web::Json<ProbeRequest>) -> Result<HttpResponse>
 
     log::info!("开始探测设备: {}，账号: {}", ip, username);
 
-    // 阶段1：并发尝试所有 Strix 模式的通道 1，确定品牌和 URL 模式
+    // 阶段1：并发尝试所有 Strix 模式的通道 1-4，确定品牌和 URL 模式
+    // 不能只试通道1，因为NVR的通道1可能恰好没有接摄像头（离线）
     let patterns = strix::get_patterns();
     let mut detected_pattern: Option<String> = None;
 
-    log::info!("阶段1：并发尝试 {} 种 Strix URL 模式的通道 1...", patterns.len());
+    log::info!("阶段1：并发尝试 {} 种 Strix URL 模式的通道 1-4...", patterns.len());
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(8));
     let mut handles = Vec::new();
 
-    for (_idx, pattern) in patterns.iter().enumerate() {
-        let url = pattern.template
-            .replace("{user}", username)
-            .replace("{pass}", password)
-            .replace("{ip}", ip)
-            .replace("{channel}", "1");
+    for pattern in patterns.iter() {
         let pattern_name = pattern.name.clone();
+        let template = pattern.template.clone();
         let sem = semaphore.clone();
+        let user = username.to_string();
+        let pass = password.to_string();
+        let target_ip = ip.to_string();
 
         let handle = tokio::spawn(async move {
             let _permit = sem.acquire().await.ok()?;
-            log::debug!("尝试模式 [{}]: {}", pattern_name, url);
-            let (success, _snapshot, error) = verify_rtsp_url(&url, 1).await;
-            let log_entry = ProbeLogEntry {
-                pattern_name: pattern_name.clone(),
-                url: url.clone(),
-                success,
-                error: error.clone(),
-            };
-            if success {
-                log::info!("✅ 模式识别成功: {}", pattern_name);
-                Some((pattern_name, log_entry))
-            } else {
-                Some(("".to_string(), log_entry))
+            let mut log_entries: Vec<ProbeLogEntry> = Vec::new();
+
+            // 尝试通道 1, 2, 3, 4
+            for ch in [1, 2, 3, 4] {
+                let url = template
+                    .replace("{user}", &user)
+                    .replace("{pass}", &pass)
+                    .replace("{ip}", &target_ip)
+                    .replace("{channel}", &ch.to_string());
+
+                log::debug!("尝试模式 [{}] 通道 {}: {}", pattern_name, ch, url);
+                let (success, _snapshot, error) = verify_rtsp_url(&url, ch).await;
+
+                log_entries.push(ProbeLogEntry {
+                    pattern_name: format!("{} (ch{})", pattern_name, ch),
+                    url: url.clone(),
+                    success,
+                    error: error.clone(),
+                });
+
+                if success {
+                    log::info!("✅ 模式识别成功: {} 通道 {}", pattern_name, ch);
+                    return Some((pattern_name, log_entries, true));
+                }
             }
+
+            // 所有通道都失败
+            Some(("".to_string(), log_entries, false))
         });
         handles.push(handle);
     }
@@ -651,16 +665,16 @@ pub async fn probe_device(body: web::Json<ProbeRequest>) -> Result<HttpResponse>
     // 收集所有尝试结果
     let mut probe_log: Vec<ProbeLogEntry> = Vec::new();
     for handle in handles {
-        if let Ok(Some((name, entry))) = handle.await {
-            probe_log.push(entry);
-            if !name.is_empty() && detected_pattern.is_none() {
+        if let Ok(Some((name, entries, success))) = handle.await {
+            probe_log.extend(entries);
+            if success && detected_pattern.is_none() && !name.is_empty() {
                 detected_pattern = Some(name);
             }
         }
     }
 
-    // 按尝试顺序排序（保持原始顺序）
-    probe_log.sort_by_key(|e| e.pattern_name.clone());
+    // 按模式名排序日志
+    probe_log.sort_by(|a, b| a.pattern_name.cmp(&b.pattern_name));
 
     let (brand, main_pattern) = match detected_pattern {
         Some(pattern_name) => {
@@ -672,7 +686,7 @@ pub async fn probe_device(body: web::Json<ProbeRequest>) -> Result<HttpResponse>
             (brand, main)
         }
         None => {
-            log::warn!("所有 Strix URL 模式的通道 1 均验证失败");
+            log::warn!("所有 Strix URL 模式的通道 1-4 均验证失败");
             return Ok(HttpResponse::Ok().json(ApiResponse::ok(ProbeResult {
                 ip: ip.clone(),
                 brand: "unknown".to_string(),
@@ -681,7 +695,7 @@ pub async fn probe_device(body: web::Json<ProbeRequest>) -> Result<HttpResponse>
                     url: "".to_string(),
                     success: false,
                     snapshot_base64: None,
-                    error: Some("无法识别设备，请检查账号密码或 RTSP 是否开启".to_string()),
+                    error: Some("无法识别设备，请检查：1) 账号密码是否正确；2) RTSP是否开启；3) 通道1-4是否均离线".to_string()),
                 }],
                 probe_log,
             })));
