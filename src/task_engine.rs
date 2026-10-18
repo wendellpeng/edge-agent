@@ -5,6 +5,7 @@ use crate::{
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::Local;
 use rusqlite::Connection;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -12,6 +13,7 @@ use tokio_cron_scheduler::{Job, JobScheduler};
 
 pub struct TaskEngine {
     scheduler: Arc<Mutex<JobScheduler>>,
+    first_reload: AtomicBool,
 }
 
 impl TaskEngine {
@@ -21,10 +23,15 @@ impl TaskEngine {
             .map_err(|e| format!("创建调度器失败: {}", e))?;
         Ok(TaskEngine {
             scheduler: Arc::new(Mutex::new(scheduler)),
+            first_reload: AtomicBool::new(true),
         })
     }
 
     pub async fn start(&self) -> Result<(), String> {
+        {
+            let mut sched = self.scheduler.lock().await;
+            sched.start().await.map_err(|e| e.to_string())?;
+        }
         self.reload_jobs().await?;
         log::info!("任务引擎已启动");
         Ok(())
@@ -35,7 +42,7 @@ impl TaskEngine {
         let mut stmt = conn.prepare("SELECT * FROM scenarios WHERE enabled = 1")
             .map_err(|e| e.to_string())?;
 
-        let scenarios = stmt.query_map([], |row| {
+        let scenarios: Vec<Scenario> = stmt.query_map([], |row| {
             let pipeline_str: String = row.get("pipeline")?;
             Ok(Scenario {
                 id: row.get("id")?,
@@ -45,16 +52,22 @@ impl TaskEngine {
                 created_at: row.get("created_at")?,
                 updated_at: row.get("updated_at")?,
             })
-        }).map_err(|e| e.to_string())?;
+        }).map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
 
-        // 每次 reload 都清空 scheduler 并重建，不保留任何历史任务
         let mut sched = self.scheduler.lock().await;
-        sched.shutdown().await.ok();
-        *sched = JobScheduler::new().await.map_err(|e| e.to_string())?;
-        sched.start().await.map_err(|e| e.to_string())?;
-        log::info!("调度器已重置，开始加载场景...");
 
-        for scenario in scenarios.flatten() {
+        // 只有非首次 reload 时才 shutdown + recreate，避免第一次启动时的 Closed 错误
+        if !self.first_reload.swap(false, Ordering::SeqCst) {
+            sched.shutdown().await.ok();
+            *sched = JobScheduler::new().await.map_err(|e| e.to_string())?;
+            sched.start().await.map_err(|e| e.to_string())?;
+            log::info!("调度器已重置，开始加载 {} 个场景...", scenarios.len());
+        } else {
+            log::info!("首次加载 {} 个场景...", scenarios.len());
+        }
+
+        for scenario in scenarios {
             let trigger = scenario.pipeline.iter().find(|n| n.node_type == "trigger");
             let Some(trigger) = trigger else {
                 log::warn!("场景 [{}] 没有触发器节点，跳过调度", scenario.name);

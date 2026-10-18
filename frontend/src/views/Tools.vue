@@ -78,6 +78,24 @@ async function remove(id) {
   try { await api.deleteTool(id); await load(); } catch (e) { alert(e); }
 }
 
+async function openDiscover() {
+  showDiscover.value = true;
+  discovered.value = [];
+  await doDiscover();
+}
+
+async function doDiscover() {
+  discovering.value = true;
+  discoverHint.value = "";
+  try {
+    discovered.value = await api.discoverTools(discoverTimeout.value);
+    if (!discovered.value.length) {
+      discoverHint.value = "未扫描到 RTSP 设备。可能原因：1) 设备未开启 RTSP（554端口）；2) 与当前设备不在同一网段；3) 防火墙拦截 554 端口。建议直接手动添加接入。";
+    }
+  } catch (e) { alert("扫描失败: " + e); }
+  finally { discovering.value = false; }
+}
+
 async function testTool(id) {
   try {
     testResult.value = null;
