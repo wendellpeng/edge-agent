@@ -28,3 +28,16 @@ oxvif = "0.16"
 tokio = { version = "1", features = ["full"] }
 dirs = "5"
 local-ip-address = "0.6"
+
+# Windows tray app (only compiled on Windows)
+[target.'cfg(windows)'.dependencies]
+tray-icon = "0.19"
+tao = "0.30"
+
+[[bin]]
+name = "edge-agent"
+path = "src/main.rs"
+
+[[bin]]
+name = "edge-agent-tray"
+path = "src/bin/tray.rs"
