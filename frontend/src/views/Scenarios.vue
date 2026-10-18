@@ -71,7 +71,7 @@ function getNodeLabel(node) {
   if (node.node_type === "tool") {
     const toolId = node.config.tool_id;
     const tool = tools.value.find(t => t.id === toolId);
-    return `工具: ${tool ? tool.name : "未选择"}`;
+    return `抓拍: ${tool ? tool.name : "未选择"}`;
   }
   if (node.node_type === "http_push") {
     return `推送: ${node.config.url || "未配置"}`;
@@ -140,9 +140,9 @@ onMounted(load);
 
               <!-- 工具节点 -->
               <div v-else-if="node.node_type === 'tool'" class="node-content">
-                <div class="node-title">工具执行</div>
+                <div class="node-title">抓拍</div>
                 <div class="field">
-                  <label>选择工具</label>
+                  <label>选择摄像头</label>
                   <select v-model="node.config.tool_id">
                     <option :value="null">请选择</option>
                     <option v-for="t in tools" :key="t.id" :value="t.id">{{ t.name }} ({{ t.location || t.endpoint }})</option>

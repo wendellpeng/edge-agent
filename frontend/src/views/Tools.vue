@@ -12,8 +12,6 @@ const discovering = ref(false);
 const discovered = ref([]);
 const discoverTimeout = ref(5);
 const discoverHint = ref("");
-const showChannels = ref(false);
-const channels = ref([]);
 const enumerating = ref(false);
 const rtspTemplates = ref([]);
 
@@ -36,12 +34,9 @@ const manualVerifying = ref(false);
 const manualResult = ref(null);
 
 const form = ref({
-  id: 0, tool_type: "onvif_camera", name: "", endpoint: "", xaddr: "",
+  id: 0, tool_type: "rtsp_camera", name: "", endpoint: "", xaddr: "",
   location: "", username: "", password: "", channel: 1, brand: "", enabled: true,
 });
-
-const isRtsp = computed(() => form.value.tool_type === "rtsp_camera");
-const isOnvif = computed(() => form.value.tool_type === "onvif_camera");
 
 async function load() {
   tools.value = await api.listTools();
@@ -56,7 +51,7 @@ async function loadTemplates() {
 }
 
 function addNew() {
-  form.value = { id: 0, tool_type: "onvif_camera", name: "", endpoint: "http://192.168.1.100:8000/onvif/device_service", xaddr: "", location: "", username: "", password: "", channel: 1, brand: "", enabled: true };
+  form.value = { id: 0, tool_type: "rtsp_camera", name: "", endpoint: "", xaddr: "", location: "", username: "", password: "", channel: 1, brand: "", enabled: true };
   editing.value = null;
   showForm.value = true;
 }
@@ -83,33 +78,6 @@ async function remove(id) {
   try { await api.deleteTool(id); await load(); } catch (e) { alert(e); }
 }
 
-async function openDiscover() {
-  showDiscover.value = true;
-  discovered.value = [];
-  await doDiscover();
-}
-
-async function doDiscover() {
-  discovering.value = true;
-  discoverHint.value = "";
-  try {
-    discovered.value = await api.discoverTools(discoverTimeout.value);
-    if (!discovered.value.length) {
-      discoverHint.value = "未扫描到 RTSP 设备。可能原因：1) 设备未开启 RTSP（554端口）；2) 与当前设备不在同一网段；3) 防火墙拦截 554 端口。建议直接手动添加接入。";
-    }
-  } catch (e) { alert("扫描失败: " + e); }
-  finally { discovering.value = false; }
-}
-
-function selectDiscovered(device) {
-  form.value.endpoint = device.endpoint;
-  form.value.xaddr = device.xaddr || "";
-  form.value.name = device.name || device.endpoint;
-  form.value.tool_type = "rtsp_camera";
-  showDiscover.value = false;
-  showForm.value = true;
-}
-
 async function testTool(id) {
   try {
     testResult.value = null;
@@ -122,59 +90,9 @@ async function testTool(id) {
   }
 }
 
-async function enumerateChannels() {
-  if (!editing.value) {
-    alert("请先保存工具，再枚举通道");
-    return;
-  }
-  enumerating.value = true;
-  channels.value = [];
-  try {
-    channels.value = await api.listChannels(editing.value);
-    if (channels.value.length) showChannels.value = true;
-    else alert("未获取到通道列表，请检查 endpoint 和账号密码");
-  } catch (e) { alert("枚举通道失败: " + e); }
-  finally { enumerating.value = false; }
-}
-
-function selectChannel(ch) {
-  form.value.channel = ch.index;
-  showChannels.value = false;
-}
-
-async function generateRtsp() {
-  try {
-    const ip = extractIp(form.value.endpoint) || form.value.endpoint;
-    // 使用第一个 Strix 模板生成（通用模式）
-    const pattern = rtspTemplates.value[0];
-    if (!pattern) {
-      alert("未加载 RTSP 模板");
-      return;
-    }
-    const result = await api.generateRtspUrl({
-      pattern_name: pattern.name,
-      ip: ip,
-      username: form.value.username || "admin",
-      password: form.value.password || "",
-      channel: form.value.channel || 1,
-    });
-    form.value.endpoint = result.rtsp_url;
-  } catch (e) {
-    alert("生成 RTSP URL 失败: " + e);
-  }
-}
-
 function extractIp(str) {
   const m = str.match(/(\d+\.\d+\.\d+\.\d+)/);
   return m ? m[1] : "";
-}
-
-function onTypeChange() {
-  if (isRtsp.value && !form.value.endpoint.startsWith("rtsp://")) {
-    form.value.endpoint = "";
-  } else if (isOnvif.value && !form.value.endpoint.startsWith("http")) {
-    form.value.endpoint = "http://192.168.1.100:8000/onvif/device_service";
-  }
 }
 
 // ===================== 接入向导 =====================
@@ -314,7 +232,7 @@ onMounted(() => {
 
 <template>
   <div>
-    <header><h1>接入管理</h1><p class="sub">ONVIF / RTSP 摄像头接入 — 添加、配置、测试抓图</p></header>
+    <header><h1>接入管理</h1><p class="sub">RTSP 摄像头/NVR 接入 — 添加、配置、测试抓图</p></header>
     <section class="toolbar">
       <button @click="addNew">+ 添加工具</button>
       <button class="btn-secondary" @click="openDiscover">扫描局域网</button>
@@ -327,29 +245,13 @@ onMounted(() => {
         <h3>{{ editing ? "编辑工具" : "添加工具" }}</h3>
         <div class="form-grid">
           <div class="field"><label>名称</label><input v-model="form.name" /></div>
-          <div class="field"><label>类型</label>
-            <select v-model="form.tool_type" @change="onTypeChange">
-              <option value="onvif_camera">ONVIF 摄像头</option>
-              <option value="rtsp_camera">RTSP 摄像头 / NVR</option>
-            </select>
-          </div>
-
           <div class="field full">
-            <label>{{ isRtsp ? 'RTSP URL' : 'Endpoint' }}</label>
-            <input v-model="form.endpoint" :placeholder="isRtsp ? 'rtsp://admin:pass@192.168.0.104:554/Streaming/Channels/101' : 'http://192.168.1.100:8000/onvif/device_service'" />
+            <label>RTSP URL</label>
+            <input v-model="form.endpoint" placeholder="rtsp://admin:pass@192.168.0.104:554/Streaming/Channels/101" />
           </div>
-
-          <div v-if="isOnvif" class="field"><label>XAddr</label><input v-model="form.xaddr" placeholder="可选" /></div>
           <div class="field"><label>位置</label><input v-model="form.location" placeholder="如：仓库A-货架区" /></div>
           <div class="field"><label>账号</label><input v-model="form.username" placeholder="admin" /></div>
           <div class="field"><label>密码</label><input v-model="form.password" type="password" placeholder="密码" /></div>
-          <div class="field" style="display:flex; flex-direction:row; align-items:flex-end; gap:8px;">
-            <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
-              <label>通道</label>
-              <input v-model.number="form.channel" type="number" min="1" placeholder="1" style="width:100%;" />
-            </div>
-            <button v-if="isOnvif" type="button" class="btn-secondary" style="padding:8px 12px; font-size:12px;" :disabled="enumerating || !editing" @click="enumerateChannels">{{ enumerating ? "枚举中…" : "枚举通道" }}</button>
-          </div>
           <div class="field"><label>启用</label><input type="checkbox" v-model="form.enabled" /></div>
         </div>
         <div class="modal-actions">
@@ -385,7 +287,6 @@ onMounted(() => {
               <span class="badge badge-red">RTSP 554</span>
             </div>
             <div style="margin-top:10px; display:flex; gap:8px;">
-              <button class="btn-small" @click="selectDiscovered(d)">直接添加</button>
               <button class="btn-small btn-wizard" @click="openWizard(d)">接入向导</button>
             </div>
           </div>
@@ -485,23 +386,6 @@ onMounted(() => {
               </div>
             </div>
           </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 通道选择弹窗 -->
-    <div v-if="showChannels" class="modal-overlay" @click.self="showChannels = false">
-      <div class="modal">
-        <h3>选择通道</h3>
-        <p style="color:#888; font-size:13px; margin:8px 0 12px;">该设备共有 {{ channels.length }} 个 Profile，请选择要使用的通道：</p>
-        <div class="device-list">
-          <div v-for="ch in channels" :key="ch.index" class="device-card" @click="selectChannel(ch)">
-            <div class="device-name">通道 {{ ch.index }}</div>
-            <div class="device-info">Token: {{ ch.token }}</div>
-          </div>
-        </div>
-        <div class="modal-actions">
-          <button class="btn-secondary" @click="showChannels = false">取消</button>
         </div>
       </div>
     </div>
