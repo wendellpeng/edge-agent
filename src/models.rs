@@ -25,12 +25,57 @@ pub struct Tool {
     pub password: Option<String>,
     #[serde(default = "default_channel")]
     pub channel: i32,
+    #[serde(default)]
+    pub brand: Option<String>,
     pub enabled: bool,
     #[serde(default)]
     pub created_at: String,
 }
 
 fn default_channel() -> i32 { 1 }
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RtspTemplate {
+    pub brand: String,
+    pub name: String,
+    pub main_stream: String,
+    pub sub_stream: String,
+}
+
+pub fn rtsp_templates() -> Vec<RtspTemplate> {
+    vec![
+        RtspTemplate {
+            brand: "hikvision".to_string(),
+            name: "海康威视 NVR/DVR".to_string(),
+            main_stream: "rtsp://{user}:{pass}@{ip}:554/Streaming/Channels/{channel}01".to_string(),
+            sub_stream: "rtsp://{user}:{pass}@{ip}:554/Streaming/Channels/{channel}02".to_string(),
+        },
+        RtspTemplate {
+            brand: "dahua".to_string(),
+            name: "大华 NVR/DVR".to_string(),
+            main_stream: "rtsp://{user}:{pass}@{ip}:554/cam/realmonitor?channel={channel}&subtype=0".to_string(),
+            sub_stream: "rtsp://{user}:{pass}@{ip}:554/cam/realmonitor?channel={channel}&subtype=1".to_string(),
+        },
+        RtspTemplate {
+            brand: "tp-link".to_string(),
+            name: "TP-LINK".to_string(),
+            main_stream: "rtsp://{user}:{pass}@{ip}:554/stream1".to_string(),
+            sub_stream: "rtsp://{user}:{pass}@{ip}:554/stream2".to_string(),
+        },
+        RtspTemplate {
+            brand: "uniview".to_string(),
+            name: "宇视 Uniview".to_string(),
+            main_stream: "rtsp://{user}:{pass}@{ip}:554/video{channel}".to_string(),
+            sub_stream: "rtsp://{user}:{pass}@{ip}:554/video{channel}_2".to_string(),
+        },
+        RtspTemplate {
+            brand: "generic".to_string(),
+            name: "通用 RTSP".to_string(),
+            main_stream: "rtsp://{user}:{pass}@{ip}:554/stream{channel}".to_string(),
+            sub_stream: "rtsp://{user}:{pass}@{ip}:554/stream{channel}_sub".to_string(),
+        },
+    ]
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CredentialMeta {

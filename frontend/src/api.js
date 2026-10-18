@@ -27,6 +27,8 @@ export const api = {
   deleteTool: (id) => request("DELETE", `/api/tools/${id}`),
   testSnapshot: (id) => request("POST", `/api/tools/${id}/snapshot`),
   listChannels: (id) => request("GET", `/api/tools/${id}/channels`),
+  listRtspTemplates: () => request("GET", "/api/tools/rtsp-templates"),
+  generateRtspUrl: (params) => request("POST", "/api/tools/rtsp-url", params),
 
   // 场景
   listScenarios: () => request("GET", "/api/scenarios"),

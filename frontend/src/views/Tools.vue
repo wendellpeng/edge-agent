@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from "vue";
+import { ref, onMounted, computed } from "vue";
 import { api } from "../api.js";
 
 const tools = ref([]);
@@ -12,21 +12,33 @@ const discovering = ref(false);
 const discovered = ref([]);
 const discoverTimeout = ref(5);
 const discoverHint = ref("");
-const form = ref({
-  id: 0, tool_type: "onvif_camera", name: "", endpoint: "", xaddr: "",
-  location: "", username: "", password: "", channel: 1, enabled: true,
-});
-
 const showChannels = ref(false);
 const channels = ref([]);
 const enumerating = ref(false);
+const rtspTemplates = ref([]);
+
+const form = ref({
+  id: 0, tool_type: "onvif_camera", name: "", endpoint: "", xaddr: "",
+  location: "", username: "", password: "", channel: 1, brand: "", enabled: true,
+});
+
+const isRtsp = computed(() => form.value.tool_type === "rtsp_camera");
+const isOnvif = computed(() => form.value.tool_type === "onvif_camera");
 
 async function load() {
   tools.value = await api.listTools();
 }
 
+async function loadTemplates() {
+  try {
+    rtspTemplates.value = await api.listRtspTemplates();
+  } catch (e) {
+    rtspTemplates.value = [];
+  }
+}
+
 function addNew() {
-  form.value = { id: 0, tool_type: "onvif_camera", name: "", endpoint: "http://192.168.1.100:8000/onvif/device_service", xaddr: "", location: "", username: "", password: "", channel: 1, enabled: true };
+  form.value = { id: 0, tool_type: "onvif_camera", name: "", endpoint: "http://192.168.1.100:8000/onvif/device_service", xaddr: "", location: "", username: "", password: "", channel: 1, brand: "", enabled: true };
   editing.value = null;
   showForm.value = true;
 }
@@ -34,28 +46,9 @@ function addNew() {
 function edit(t) {
   form.value = JSON.parse(JSON.stringify(t));
   if (!form.value.channel) form.value.channel = 1;
+  if (!form.value.brand) form.value.brand = "";
   editing.value = t.id;
   showForm.value = true;
-}
-
-async function enumerateChannels() {
-  if (!editing.value) {
-    alert("请先保存工具，再枚举通道");
-    return;
-  }
-  enumerating.value = true;
-  channels.value = [];
-  try {
-    channels.value = await api.listChannels(editing.value);
-    if (channels.value.length) showChannels.value = true;
-    else alert("未获取到通道列表，请检查 endpoint 和账号密码");
-  } catch (e) { alert("枚举通道失败: " + e); }
-  finally { enumerating.value = false; }
-}
-
-function selectChannel(ch) {
-  form.value.channel = ch.index;
-  showChannels.value = false;
 }
 
 async function save() {
@@ -94,6 +87,9 @@ function selectDiscovered(device) {
   form.value.endpoint = device.endpoint;
   form.value.xaddr = device.xaddr || "";
   form.value.name = device.name || device.endpoint;
+  if (device.source === "rtsp_scan") {
+    form.value.tool_type = "rtsp_camera";
+  }
   showDiscover.value = false;
   showForm.value = true;
 }
@@ -110,12 +106,64 @@ async function testTool(id) {
   }
 }
 
-onMounted(load);
+async function enumerateChannels() {
+  if (!editing.value) {
+    alert("请先保存工具，再枚举通道");
+    return;
+  }
+  enumerating.value = true;
+  channels.value = [];
+  try {
+    channels.value = await api.listChannels(editing.value);
+    if (channels.value.length) showChannels.value = true;
+    else alert("未获取到通道列表，请检查 endpoint 和账号密码");
+  } catch (e) { alert("枚举通道失败: " + e); }
+  finally { enumerating.value = false; }
+}
+
+function selectChannel(ch) {
+  form.value.channel = ch.index;
+  showChannels.value = false;
+}
+
+async function generateRtsp() {
+  try {
+    const ip = extractIp(form.value.endpoint) || form.value.endpoint;
+    const result = await api.generateRtspUrl({
+      brand: form.value.brand,
+      ip: ip,
+      username: form.value.username || "admin",
+      password: form.value.password || "",
+      channel: form.value.channel || 1,
+    });
+    form.value.endpoint = result.rtsp_url;
+  } catch (e) {
+    alert("生成 RTSP URL 失败: " + e);
+  }
+}
+
+function extractIp(str) {
+  const m = str.match(/(\d+\.\d+\.\d+\.\d+)/);
+  return m ? m[1] : "";
+}
+
+function onTypeChange() {
+  if (isRtsp.value && !form.value.endpoint.startsWith("rtsp://")) {
+    form.value.endpoint = "";
+  } else if (isOnvif.value && !form.value.endpoint.startsWith("http")) {
+    form.value.endpoint = "http://192.168.1.100:8000/onvif/device_service";
+  }
+}
+
+onMounted(() => {
+  load();
+  loadTemplates();
+});
 </script>
 
 <template>
   <div>
-    <header><h1>接入管理</h1><p class="sub">ONVIF 摄像头接入 — 添加、配置、测试抓图</p></header>
+    <header><h1>接入管理</h1><p class="sub">ONVIF / RTSP 摄像头接入 — 添加、配置、测试抓图</p></header>
     <section class="toolbar">
       <button @click="addNew">+ 添加工具</button>
       <button class="btn-secondary" @click="openDiscover">扫描局域网</button>
@@ -129,10 +177,34 @@ onMounted(load);
         <div class="form-grid">
           <div class="field"><label>名称</label><input v-model="form.name" /></div>
           <div class="field"><label>类型</label>
-            <select v-model="form.tool_type"><option value="onvif_camera">ONVIF 摄像头</option></select>
+            <select v-model="form.tool_type" @change="onTypeChange">
+              <option value="onvif_camera">ONVIF 摄像头</option>
+              <option value="rtsp_camera">RTSP 摄像头 / NVR</option>
+            </select>
           </div>
-          <div class="field full"><label>Endpoint</label><input v-model="form.endpoint" placeholder="http://192.168.1.100:8000/onvif/device_service" /></div>
-          <div class="field"><label>XAddr</label><input v-model="form.xaddr" placeholder="可选" /></div>
+
+          <!-- RTSP 品牌选择 -->
+          <div v-if="isRtsp" class="field">
+            <label>品牌模板</label>
+            <select v-model="form.brand">
+              <option value="">手动输入 URL</option>
+              <option v-for="t in rtspTemplates" :key="t.brand" :value="t.brand">{{ t.name }}</option>
+            </select>
+          </div>
+
+          <div class="field full">
+            <label>{{ isRtsp ? 'RTSP URL' : 'Endpoint' }}</label>
+            <input v-model="form.endpoint" :placeholder="isRtsp ? 'rtsp://admin:pass@192.168.0.104:554/Streaming/Channels/101' : 'http://192.168.1.100:8000/onvif/device_service'" />
+          </div>
+
+          <!-- RTSP 自动生成 -->
+          <div v-if="isRtsp && form.brand" class="field" style="grid-column: 1 / -1;">
+            <button type="button" class="btn-secondary" style="width: 100%; padding: 8px;" @click="generateRtsp">
+              根据品牌模板生成 RTSP URL
+            </button>
+          </div>
+
+          <div v-if="isOnvif" class="field"><label>XAddr</label><input v-model="form.xaddr" placeholder="可选" /></div>
           <div class="field"><label>位置</label><input v-model="form.location" placeholder="如：仓库A-货架区" /></div>
           <div class="field"><label>账号</label><input v-model="form.username" placeholder="admin" /></div>
           <div class="field"><label>密码</label><input v-model="form.password" type="password" placeholder="密码" /></div>
@@ -141,7 +213,7 @@ onMounted(load);
               <label>通道</label>
               <input v-model.number="form.channel" type="number" min="1" placeholder="1" style="width:100%;" />
             </div>
-            <button type="button" class="btn-secondary" style="padding:8px 12px; font-size:12px;" :disabled="enumerating || !editing" @click="enumerateChannels">{{ enumerating ? "枚举中…" : "枚举通道" }}</button>
+            <button v-if="isOnvif" type="button" class="btn-secondary" style="padding:8px 12px; font-size:12px;" :disabled="enumerating || !editing" @click="enumerateChannels">{{ enumerating ? "枚举中…" : "枚举通道" }}</button>
           </div>
           <div class="field"><label>启用</label><input type="checkbox" v-model="form.enabled" /></div>
         </div>
@@ -155,7 +227,7 @@ onMounted(load);
     <!-- 扫描发现弹窗 -->
     <div v-if="showDiscover" class="modal-overlay" @click.self="showDiscover = false">
       <div class="modal modal-wide">
-        <h3>扫描局域网 ONVIF 设备</h3>
+        <h3>扫描局域网设备</h3>
         <div class="toolbar" style="margin-bottom:12px; align-items:center;">
           <button :disabled="discovering" @click="doDiscover">{{ discovering ? "扫描中…" : "重新扫描" }}</button>
           <div class="field" style="margin:0; flex-direction:row; align-items:center; gap:8px;">
@@ -172,7 +244,8 @@ onMounted(load);
           <div v-for="d in discovered" :key="d.endpoint" class="device-card" @click="selectDiscovered(d)">
             <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
               <div class="device-name">{{ d.name || "未命名设备" }}</div>
-              <span v-if="d.source === 'port_scan'" class="badge badge-yellow">端口扫描</span>
+              <span v-if="d.source === 'rtsp_scan'" class="badge badge-red">RTSP</span>
+              <span v-else-if="d.source === 'port_scan'" class="badge badge-yellow">端口扫描</span>
               <span v-else-if="d.source === 'ws_discovery'" class="badge badge-blue">WS-Discovery</span>
             </div>
             <div class="device-info">{{ d.endpoint }}</div>
@@ -180,21 +253,6 @@ onMounted(load);
           </div>
         </div>
         <p v-else-if="!discovering" class="empty">未扫描到设备</p>
-      </div>
-    </div>
-
-    <!-- 测试抓图弹窗 -->
-    <div v-if="showTest" class="modal-overlay" @click.self="showTest = false">
-      <div class="modal">
-        <h3>测试抓图</h3>
-        <div v-if="testResult" class="test-result">
-          <p>工具: {{ testResult.tool_name }}</p>
-          <img v-if="testResult.image_base64" :src="'data:image/jpeg;base64,' + testResult.image_base64" style="max-width:100%; border-radius:8px; margin-top:12px;" />
-        </div>
-        <p v-else class="empty">正在抓取…</p>
-        <div class="modal-actions">
-          <button class="btn-secondary" @click="showTest = false">关闭</button>
-        </div>
       </div>
     </div>
 
@@ -215,6 +273,21 @@ onMounted(load);
       </div>
     </div>
 
+    <!-- 测试抓图弹窗 -->
+    <div v-if="showTest" class="modal-overlay" @click.self="showTest = false">
+      <div class="modal">
+        <h3>测试抓图</h3>
+        <div v-if="testResult" class="test-result">
+          <p>工具: {{ testResult.tool_name }}</p>
+          <img v-if="testResult.image_base64" :src="'data:image/jpeg;base64,' + testResult.image_base64" style="max-width:100%; border-radius:8px; margin-top:12px;" />
+        </div>
+        <p v-else class="empty">正在抓取…</p>
+        <div class="modal-actions">
+          <button class="btn-secondary" @click="showTest = false">关闭</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 工具列表 -->
     <div class="tool-list">
       <div v-for="t in tools" :key="t.id" class="tool-card">
@@ -222,7 +295,7 @@ onMounted(load);
           <div>
             <span class="tool-name">{{ t.name }}</span>
             <span :class="['badge', t.enabled ? 'badge-green' : 'badge-gray']">{{ t.enabled ? "启用" : "禁用" }}</span>
-            <span class="badge badge-blue">{{ t.tool_type }}</span>
+            <span class="badge badge-blue">{{ t.tool_type === 'rtsp_camera' ? 'RTSP' : 'ONVIF' }}</span>
           </div>
           <div class="tool-actions">
             <button class="btn-small" @click="testTool(t.id)">测试抓图</button>
@@ -279,6 +352,7 @@ button:disabled { opacity: 0.6; cursor: default; }
 .badge-gray { background: #333; color: #888; }
 .badge-blue { background: rgba(66,133,244,0.2); color: #4285f4; }
 .badge-yellow { background: rgba(255,193,7,0.15); color: #ffc107; }
+.badge-red { background: rgba(244,67,54,0.15); color: #f44336; }
 .empty { color: #666; padding: 40px; text-align: center; }
 .hint-box { background: rgba(255,193,7,0.1); border: 1px solid rgba(255,193,7,0.3); border-radius: 8px; padding: 12px 16px; font-size: 13px; color: #ffc107; margin-bottom: 16px; line-height: 1.6; }
 </style>
