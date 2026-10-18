@@ -22,11 +22,22 @@ pub fn init_db() -> SqlResult<Connection> {
             location        TEXT,
             username        TEXT,
             password        TEXT,
+            channel         INTEGER DEFAULT 1,
             enabled         INTEGER DEFAULT 1,
             created_at      TEXT NOT NULL
         )",
         [],
     )?;
+
+    // 兼容旧表：添加 channel 列
+    let has_channel: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('tools') WHERE name = 'channel'",
+        [], |row| row.get(0),
+    )?;
+    if has_channel == 0 {
+        log::info!("tools 表添加 channel 列...");
+        conn.execute("ALTER TABLE tools ADD COLUMN channel INTEGER DEFAULT 1", [])?;
+    }
 
     // 兼容旧表：添加 username/password 列（旧表只有 credential_id）
     let has_cred_col: i64 = conn.query_row(
@@ -46,6 +57,7 @@ pub fn init_db() -> SqlResult<Connection> {
                 location        TEXT,
                 username        TEXT,
                 password        TEXT,
+                channel         INTEGER DEFAULT 1,
                 enabled         INTEGER DEFAULT 1,
                 created_at      TEXT NOT NULL
             )", [],
@@ -109,8 +121,8 @@ fn migrate_cameras_to_tools(conn: &Connection) -> SqlResult<()> {
 
     log::info!("检测到旧版 cameras 表，自动迁移到 tools 表...");
     conn.execute(
-        "INSERT INTO tools (tool_type, name, endpoint, xaddr, location, username, password, enabled, created_at)
-         SELECT 'onvif_camera', name, endpoint, xaddr, location, '', '', enabled, created_at FROM cameras",
+        "INSERT INTO tools (tool_type, name, endpoint, xaddr, location, username, password, channel, enabled, created_at)
+         SELECT 'onvif_camera', name, endpoint, xaddr, location, '', '', 1, enabled, created_at FROM cameras",
         [],
     )?;
     conn.execute("DROP TABLE cameras", [])?;

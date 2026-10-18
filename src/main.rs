@@ -91,6 +91,7 @@ async fn main() -> std::io::Result<()> {
             .service(api::tool::delete_tool)
             .service(api::tool::discover_tools)
             .service(api::tool::test_snapshot)
+            .service(api::tool::list_channels)
             // 场景 API
             .service(api::scenario::list_scenarios)
             .service(api::scenario::add_scenario)

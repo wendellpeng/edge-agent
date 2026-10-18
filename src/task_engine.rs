@@ -319,6 +319,7 @@ fn load_tool(id: i64) -> Result<Tool, String> {
                 location: row.get("location")?,
                 username: row.get("username")?,
                 password: row.get("password")?,
+                channel: row.get("channel").unwrap_or(1),
                 enabled: row.get::<_, i32>("enabled")? == 1,
                 created_at: row.get("created_at")?,
             })

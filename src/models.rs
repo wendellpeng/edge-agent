@@ -23,10 +23,14 @@ pub struct Tool {
     pub location: Option<String>,
     pub username: Option<String>,
     pub password: Option<String>,
+    #[serde(default = "default_channel")]
+    pub channel: i32,
     pub enabled: bool,
     #[serde(default)]
     pub created_at: String,
 }
+
+fn default_channel() -> i32 { 1 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CredentialMeta {

@@ -14,23 +14,48 @@ const discoverTimeout = ref(5);
 const discoverHint = ref("");
 const form = ref({
   id: 0, tool_type: "onvif_camera", name: "", endpoint: "", xaddr: "",
-  location: "", username: "", password: "", enabled: true,
+  location: "", username: "", password: "", channel: 1, enabled: true,
 });
+
+const showChannels = ref(false);
+const channels = ref([]);
+const enumerating = ref(false);
 
 async function load() {
   tools.value = await api.listTools();
 }
 
 function addNew() {
-  form.value = { id: 0, tool_type: "onvif_camera", name: "", endpoint: "http://192.168.1.100:8000/onvif/device_service", xaddr: "", location: "", username: "", password: "", enabled: true };
+  form.value = { id: 0, tool_type: "onvif_camera", name: "", endpoint: "http://192.168.1.100:8000/onvif/device_service", xaddr: "", location: "", username: "", password: "", channel: 1, enabled: true };
   editing.value = null;
   showForm.value = true;
 }
 
 function edit(t) {
   form.value = JSON.parse(JSON.stringify(t));
+  if (!form.value.channel) form.value.channel = 1;
   editing.value = t.id;
   showForm.value = true;
+}
+
+async function enumerateChannels() {
+  if (!editing.value) {
+    alert("请先保存工具，再枚举通道");
+    return;
+  }
+  enumerating.value = true;
+  channels.value = [];
+  try {
+    channels.value = await api.listChannels(editing.value);
+    if (channels.value.length) showChannels.value = true;
+    else alert("未获取到通道列表，请检查 endpoint 和账号密码");
+  } catch (e) { alert("枚举通道失败: " + e); }
+  finally { enumerating.value = false; }
+}
+
+function selectChannel(ch) {
+  form.value.channel = ch.index;
+  showChannels.value = false;
 }
 
 async function save() {
@@ -111,6 +136,13 @@ onMounted(load);
           <div class="field"><label>位置</label><input v-model="form.location" placeholder="如：仓库A-货架区" /></div>
           <div class="field"><label>账号</label><input v-model="form.username" placeholder="admin" /></div>
           <div class="field"><label>密码</label><input v-model="form.password" type="password" placeholder="密码" /></div>
+          <div class="field" style="display:flex; flex-direction:row; align-items:flex-end; gap:8px;">
+            <div style="flex:1; display:flex; flex-direction:column; gap:4px;">
+              <label>通道</label>
+              <input v-model.number="form.channel" type="number" min="1" placeholder="1" style="width:100%;" />
+            </div>
+            <button type="button" class="btn-secondary" style="padding:8px 12px; font-size:12px;" :disabled="enumerating || !editing" @click="enumerateChannels">{{ enumerating ? "枚举中…" : "枚举通道" }}</button>
+          </div>
           <div class="field"><label>启用</label><input type="checkbox" v-model="form.enabled" /></div>
         </div>
         <div class="modal-actions">
@@ -166,6 +198,23 @@ onMounted(load);
       </div>
     </div>
 
+    <!-- 通道选择弹窗 -->
+    <div v-if="showChannels" class="modal-overlay" @click.self="showChannels = false">
+      <div class="modal">
+        <h3>选择通道</h3>
+        <p style="color:#888; font-size:13px; margin:8px 0 12px;">该设备共有 {{ channels.length }} 个 Profile，请选择要使用的通道：</p>
+        <div class="device-list">
+          <div v-for="ch in channels" :key="ch.index" class="device-card" @click="selectChannel(ch)">
+            <div class="device-name">通道 {{ ch.index }}</div>
+            <div class="device-info">Token: {{ ch.token }}</div>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn-secondary" @click="showChannels = false">取消</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 工具列表 -->
     <div class="tool-list">
       <div v-for="t in tools" :key="t.id" class="tool-card">
@@ -185,6 +234,7 @@ onMounted(load);
           <div class="info-row"><span class="info-label">Endpoint:</span><span class="info-value">{{ t.endpoint }}</span></div>
           <div class="info-row"><span class="info-label">位置:</span><span class="info-value">{{ t.location || "-" }}</span></div>
           <div class="info-row"><span class="info-label">账号:</span><span class="info-value">{{ t.username || "无" }}</span></div>
+          <div class="info-row"><span class="info-label">通道:</span><span class="info-value">{{ t.channel || 1 }}</span></div>
         </div>
       </div>
     </div>

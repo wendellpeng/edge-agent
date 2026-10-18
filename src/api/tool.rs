@@ -1,4 +1,5 @@
 use actix_web::{delete, get, post, put, web, HttpResponse, Result};
+use serde::{Deserialize, Serialize};
 use crate::{
     db::db_path,
     models::{ApiResponse, CameraDiscovery, Tool},
@@ -23,6 +24,7 @@ pub async fn list_tools() -> Result<HttpResponse> {
             location: row.get("location")?,
             username: row.get("username")?,
             password: row.get("password")?,
+            channel: row.get("channel").unwrap_or(1),
             enabled: row.get::<_, i32>("enabled")? == 1,
             created_at: row.get("created_at")?,
         })
@@ -36,11 +38,12 @@ pub async fn list_tools() -> Result<HttpResponse> {
 pub async fn add_tool(body: web::Json<Tool>) -> Result<HttpResponse> {
     let conn = Connection::open(db_path()).map_err(|e| ApiError(e.to_string()))?;
     conn.execute(
-        "INSERT INTO tools (tool_type, name, endpoint, xaddr, location, username, password, enabled, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO tools (tool_type, name, endpoint, xaddr, location, username, password, channel, enabled, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         rusqlite::params![
             body.tool_type, body.name, body.endpoint, body.xaddr,
             body.location, body.username, body.password,
+            body.channel.max(1),
             if body.enabled { 1 } else { 0 },
             Local::now().to_rfc3339(),
         ],
@@ -52,10 +55,11 @@ pub async fn add_tool(body: web::Json<Tool>) -> Result<HttpResponse> {
 pub async fn update_tool(path: web::Path<i64>, body: web::Json<Tool>) -> Result<HttpResponse> {
     let conn = Connection::open(db_path()).map_err(|e| ApiError(e.to_string()))?;
     conn.execute(
-        "UPDATE tools SET tool_type=?1, name=?2, endpoint=?3, xaddr=?4, location=?5, username=?6, password=?7, enabled=?8 WHERE id=?9",
+        "UPDATE tools SET tool_type=?1, name=?2, endpoint=?3, xaddr=?4, location=?5, username=?6, password=?7, channel=?8, enabled=?9 WHERE id=?10",
         rusqlite::params![
             body.tool_type, body.name, body.endpoint, body.xaddr,
             body.location, body.username, body.password,
+            body.channel.max(1),
             if body.enabled { 1 } else { 0 },
             *path,
         ],
@@ -274,8 +278,13 @@ pub async fn fetch_snapshot(tool: &Tool) -> Result<Vec<u8>, String> {
 
     let profiles = session.get_profiles().await
         .map_err(|e| format!("获取 Media Profile 失败: {}", e))?;
-    let profile = profiles.first()
-        .ok_or_else(|| "摄像头没有可用 Media Profile".to_string())?;
+
+    let idx = (tool.channel.max(1) - 1) as usize;
+    let profile = profiles.get(idx)
+        .or_else(|| profiles.first())
+        .ok_or_else(|| "设备没有可用 Media Profile".to_string())?;
+
+    log::info!("工具 [{}] 使用 Profile {}/{} (token={})", tool.name, idx + 1, profiles.len(), profile.token);
 
     let snap = session.get_snapshot_uri(&profile.token).await
         .map_err(|e| format!("获取 Snapshot URI 失败: {}", e))?;
@@ -313,6 +322,7 @@ pub async fn test_snapshot(path: web::Path<i64>) -> Result<HttpResponse> {
                 location: row.get("location")?,
                 username: row.get("username")?,
                 password: row.get("password")?,
+                channel: row.get("channel").unwrap_or(1),
                 enabled: row.get::<_, i32>("enabled")? == 1,
                 created_at: row.get("created_at")?,
             })
@@ -331,3 +341,59 @@ pub async fn test_snapshot(path: web::Path<i64>) -> Result<HttpResponse> {
 }
 
 use crate::api::ApiError;
+
+// ===================== NVR 通道枚举 =====================
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ChannelInfo {
+    pub index: i32,
+    pub token: String,
+    pub name: Option<String>,
+}
+
+#[get("/api/tools/{id}/channels")]
+pub async fn list_channels(path: web::Path<i64>) -> Result<HttpResponse> {
+    let conn = Connection::open(db_path()).map_err(|e| ApiError(e.to_string()))?;
+    let tool: Tool = conn.query_row(
+        "SELECT * FROM tools WHERE id = ?1",
+        [*path],
+        |row| {
+            Ok(Tool {
+                id: row.get("id")?,
+                tool_type: row.get("tool_type")?,
+                endpoint: row.get("endpoint")?,
+                xaddr: row.get("xaddr")?,
+                name: row.get("name")?,
+                location: row.get("location")?,
+                username: row.get("username")?,
+                password: row.get("password")?,
+                channel: row.get("channel").unwrap_or(1),
+                enabled: row.get::<_, i32>("enabled")? == 1,
+                created_at: row.get("created_at")?,
+            })
+        },
+    ).map_err(|e| ApiError(format!("加载工具失败: {}", e)))?;
+
+    let user = tool.username.as_deref().unwrap_or("");
+    let pass = tool.password.as_deref().unwrap_or("");
+
+    let mut builder = oxvif::OnvifSession::builder(&tool.endpoint);
+    if !user.is_empty() {
+        builder = builder.with_credentials(user, pass);
+    }
+    let session = builder.build().await
+        .map_err(|e| ApiError(format!("ONVIF 连接失败: {}", e)))?;
+
+    let profiles = session.get_profiles().await
+        .map_err(|e| ApiError(format!("获取 Media Profile 失败: {}", e)))?;
+
+    let channels: Vec<ChannelInfo> = profiles.into_iter().enumerate().map(|(i, p)| {
+        ChannelInfo {
+            index: (i + 1) as i32,
+            token: p.token,
+            name: None, // oxvif Profile 可能没有 name 字段，以 token 为准
+        }
+    }).collect();
+
+    Ok(HttpResponse::Ok().json(ApiResponse::ok(channels)))
+}

@@ -26,6 +26,7 @@ export const api = {
   updateTool: (id, tool) => request("PUT", `/api/tools/${id}`, tool),
   deleteTool: (id) => request("DELETE", `/api/tools/${id}`),
   testSnapshot: (id) => request("POST", `/api/tools/${id}/snapshot`),
+  listChannels: (id) => request("GET", `/api/tools/${id}/channels`),
 
   // 场景
   listScenarios: () => request("GET", "/api/scenarios"),
