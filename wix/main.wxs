@@ -1,38 +1,39 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Id="*"
-           Name="视觉巡检智能体"
+           Name="Edge Agent"
            Language="2052"
            Version="$(var.Version)"
            Manufacturer="中科云谷"
-           UpgradeCode="A1B2C3D4-E5F6-7890-ABCD-EF1234567890">
+           UpgradeCode="A1B2C3D4-E5F6-7890-ABCD-EF1234567890"
+           Codepage="65001">
 
     <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" />
 
-    <MajorUpgrade DowngradeErrorMessage="已安装更高版本，无法降级。" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
 
     <Media Id="1" Cabinet="media1.cab" EmbedCab="yes" />
 
-    <!-- 应用程序图标 -->
+    <!-- Application Icon -->
     <Icon Id="AppIcon.ico" SourceFile="assets\app-icon.ico" />
     <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
 
-    <!-- 安装目录 -->
+    <!-- Installation Directory -->
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
-        <Directory Id="INSTALLDIR" Name="视觉巡检智能体">
+        <Directory Id="INSTALLDIR" Name="Edge Agent">
 
-          <!-- 主程序 -->
+          <!-- Main Program -->
           <Component Id="MainBinary" Guid="B1A2C3D4-E5F6-7890-ABCD-EF1234567891">
             <File Id="EdgeAgentEXE" Name="edge-agent.exe" Source="target\$(var.Profile)\edge-agent.exe" KeyPath="yes" />
           </Component>
 
-          <!-- 托盘程序 -->
+          <!-- Tray Program -->
           <Component Id="TrayBinary" Guid="B1A2C3D4-E5F6-7890-ABCD-EF1234567892">
             <File Id="EdgeAgentTrayEXE" Name="edge-agent-tray.exe" Source="target\$(var.Profile)\edge-agent-tray.exe" KeyPath="yes" />
           </Component>
 
-          <!-- 托盘开机启动注册表 -->
+          <!-- Tray Auto-start Registry -->
           <Component Id="TrayStartup" Guid="B1A2C3D4-E5F6-7890-ABCD-EF1234567893">
             <RegistryValue Root="HKCU"
                            Key="Software\Microsoft\Windows\CurrentVersion\Run"
@@ -45,40 +46,40 @@
         </Directory>
       </Directory>
 
-      <!-- 开始菜单快捷方式 -->
+      <!-- Start Menu Shortcut -->
       <Directory Id="ProgramMenuFolder">
-        <Directory Id="ApplicationProgramsFolder" Name="视觉巡检智能体">
+        <Directory Id="ApplicationProgramsFolder" Name="Edge Agent">
           <Component Id="ApplicationShortcut" Guid="B1A2C3D4-E5F6-7890-ABCD-EF1234567894">
             <Shortcut Id="ApplicationStartMenuShortcut"
-                      Name="视觉巡检智能体"
-                      Description="边缘设备视觉巡检与数据采集"
+                      Name="Edge Agent"
+                      Description="Edge vision inspection and data collection agent"
                       Target="[INSTALLDIR]edge-agent-tray.exe"
                       WorkingDirectory="INSTALLDIR"
                       Icon="AppIcon.ico" />
             <RemoveFolder Id="ApplicationProgramsFolder" On="uninstall" />
-            <RegistryValue Root="HKCU" Key="Software\视觉巡检智能体" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+            <RegistryValue Root="HKCU" Key="Software\EdgeAgent" Name="installed" Type="integer" Value="1" KeyPath="yes" />
           </Component>
         </Directory>
       </Directory>
 
-      <!-- 桌面快捷方式 -->
+      <!-- Desktop Shortcut -->
       <Directory Id="DesktopFolder">
         <Component Id="DesktopShortcut" Guid="B1A2C3D4-E5F6-7890-ABCD-EF1234567895">
           <Shortcut Id="DesktopShortcut"
-                    Name="视觉巡检智能体"
-                    Description="边缘设备视觉巡检与数据采集"
+                    Name="Edge Agent"
+                    Description="Edge vision inspection and data collection agent"
                     Target="[INSTALLDIR]edge-agent-tray.exe"
                     WorkingDirectory="INSTALLDIR"
                     Icon="AppIcon.ico" />
-          <RegistryValue Root="HKCU" Key="Software\视觉巡检智能体" Name="desktop" Type="integer" Value="1" KeyPath="yes" />
+          <RegistryValue Root="HKCU" Key="Software\EdgeAgent" Name="desktop" Type="integer" Value="1" KeyPath="yes" />
         </Component>
       </Directory>
     </Directory>
 
-    <!-- 自定义动作：服务注册/卸载 -->
+    <!-- Custom Actions: Service Install/Uninstall -->
     <CustomAction Id="InstallServiceCA"
                   Directory="INSTALLDIR"
-                  ExeCommand="[SystemFolder]sc.exe create EdgeAgent binPath= &quot;[INSTALLDIR]edge-agent.exe&quot; start= auto displayname= &quot;视觉巡检智能体&quot;"
+                  ExeCommand="[SystemFolder]sc.exe create EdgeAgent binPath= &quot;[INSTALLDIR]edge-agent.exe&quot; start= auto displayname= &quot;Edge Agent&quot;"
                   Execute="deferred"
                   Return="check"
                   Impersonate="no" />
@@ -111,7 +112,7 @@
                   Return="asyncNoWait"
                   Impersonate="yes" />
 
-    <!-- 安装时：注册服务并启动 -->
+    <!-- Install: Register service and start -->
     <InstallExecuteSequence>
       <Custom Action="InstallServiceCA" After="InstallFiles">
         <![CDATA[NOT Installed]]>
@@ -123,7 +124,7 @@
         <![CDATA[NOT Installed]]>
       </Custom>
 
-      <!-- 卸载时：停止并删除服务 -->
+      <!-- Uninstall: Stop and delete service -->
       <Custom Action="StopServiceCA" Before="RemoveFiles">
         <![CDATA[(Installed OR UPGRADINGPRODUCTCODE) AND NOT REINSTALL]]>
       </Custom>
@@ -133,7 +134,7 @@
     </InstallExecuteSequence>
 
     <!-- Feature -->
-    <Feature Id="MainFeature" Title="视觉巡检智能体" Level="1">
+    <Feature Id="MainFeature" Title="Edge Agent" Level="1">
       <ComponentRef Id="MainBinary" />
       <ComponentRef Id="TrayBinary" />
       <ComponentRef Id="TrayStartup" />

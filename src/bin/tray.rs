@@ -10,10 +10,10 @@ fn main() {
     // 创建托盘菜单
     let tray_menu = Menu::new();
     let open_item = MenuItem::new("打开控制台", true, None);
-    tray_menu.append(&open_item);
-    tray_menu.append(&PredefinedMenuItem::separator());
+    let _ = tray_menu.append(&open_item);
+    let _ = tray_menu.append(&PredefinedMenuItem::separator());
     let quit_item = MenuItem::new("退出", true, None);
-    tray_menu.append(&quit_item);
+    let _ = tray_menu.append(&quit_item);
 
     // 创建图标（32x32 绿色方块）
     let icon = create_icon();
