@@ -115,7 +115,7 @@ pub async fn generate_rtsp_url(body: web::Json<RtspUrlRequest>) -> Result<HttpRe
     }))))
 }
 
-// ===================== 局域网扫描 =====================
+// ===================== 局域网扫描（全方法并行） =====================
 
 #[get("/api/tools/discover")]
 pub async fn discover_tools(query: web::Query<std::collections::HashMap<String, String>>) -> Result<HttpResponse> {
@@ -125,49 +125,77 @@ pub async fn discover_tools(query: web::Query<std::collections::HashMap<String, 
         .max(1)
         .min(30);
 
-    let mut result = Vec::new();
+    log::info!("开始全方法并行扫描，超时: {} 秒...", timeout_secs);
 
-    // 1. 主路径：ONVIF WS-Discovery UDP 多播
-    log::info!("开始 ONVIF WS-Discovery 扫描，超时: {} 秒...", timeout_secs);
-    let timeout = std::time::Duration::from_secs(timeout_secs);
-    let devices = oxvif::discovery::probe(timeout).await;
-    log::info!("WS-Discovery 扫描完成，发现 {} 台设备", devices.len());
+    // 三种扫描方法并行执行
+    let ws_timeout = std::time::Duration::from_secs(timeout_secs);
 
-    for d in &devices {
-        let name = d.scopes.iter()
-            .find(|s| s.contains("/name/"))
-            .and_then(|s| s.split("/name/").nth(1))
-            .map(|n| n.to_string());
+    let ws_future = tokio::spawn(async move {
+        log::info!("[WS-Discovery] 启动 UDP 多播探测...");
+        let devices = oxvif::discovery::probe(ws_timeout).await;
+        log::info!("[WS-Discovery] 发现 {} 台设备", devices.len());
+        let mut result = Vec::new();
+        for d in &devices {
+            let name = d.scopes.iter()
+                .find(|s| s.contains("/name/"))
+                .and_then(|s| s.split("/name/").nth(1))
+                .map(|n| n.to_string());
+            log::debug!("[WS-Discovery] endpoint={}, xaddr={:?}, name={:?}", d.endpoint, d.xaddrs.first(), name);
+            result.push(CameraDiscovery {
+                endpoint: d.endpoint.clone(),
+                xaddr: d.xaddrs.clone().into_iter().next(),
+                name,
+                scopes: d.scopes.clone(),
+                types: d.types.clone(),
+                source: "ws_discovery".to_string(),
+            });
+        }
+        result
+    });
 
-        log::debug!("WS-Discovery 发现: endpoint={}, xaddr={:?}, name={:?}", d.endpoint, d.xaddrs.first(), name);
+    let tcp_future = tokio::spawn(async move {
+        log::info!("[TCP扫描] 启动端口扫描...");
+        let r = scan_network_all_methods().await;
+        log::info!("[TCP扫描] 发现 {} 台设备", r.len());
+        r
+    });
 
-        result.push(CameraDiscovery {
-            endpoint: d.endpoint.clone(),
-            xaddr: d.xaddrs.clone().into_iter().next(),
-            name,
-            scopes: d.scopes.clone(),
-            types: d.types.clone(),
-            source: "ws_discovery".to_string(),
-        });
+    // 等待所有扫描完成
+    let mut all_results: Vec<CameraDiscovery> = Vec::new();
+
+    match ws_future.await {
+        Ok(ws_results) => all_results.extend(ws_results),
+        Err(e) => log::warn!("[WS-Discovery] 任务异常: {}", e),
     }
 
-    // 2. Fallback：TCP 端口扫描（WS-Discovery 扫不到时兜底）
-    if result.is_empty() {
-        log::info!("WS-Discovery 未发现设备，启动 TCP 端口扫描兜底...");
-        let fallback = scan_network_fallback().await;
-        log::info!("TCP 端口扫描完成，发现 {} 台设备", fallback.len());
-        result.extend(fallback);
+    match tcp_future.await {
+        Ok(tcp_results) => all_results.extend(tcp_results),
+        Err(e) => log::warn!("[TCP扫描] 任务异常: {}", e),
     }
 
-    if result.is_empty() {
-        log::warn!("所有扫描方式均未发现设备。可能原因: 1) 摄像头未开启 ONVIF/WS-Discovery; 2) 摄像头与当前设备不在同一网段; 3) macOS 防火墙拦截了 UDP 多播或 TCP 扫描");
+    // 按 endpoint 去重（WS-Discovery 优先级高于 TCP 扫描）
+    let mut seen = std::collections::HashSet::new();
+    let mut deduped: Vec<CameraDiscovery> = Vec::new();
+
+    // 先放 WS-Discovery 结果（信息更丰富）
+    for d in &all_results {
+        let key = d.endpoint.clone();
+        if seen.insert(key) {
+            deduped.push(d.clone());
+        }
     }
 
-    Ok(HttpResponse::Ok().json(ApiResponse::ok(result)))
+    log::info!("扫描完成，去重后共 {} 台设备 (原始 {} 台)", deduped.len(), all_results.len());
+
+    if deduped.is_empty() {
+        log::warn!("所有扫描方式均未发现设备。可能原因: 1) 设备未开启 ONVIF/WS-Discovery; 2) 不在同一网段; 3) 防火墙拦截");
+    }
+
+    Ok(HttpResponse::Ok().json(ApiResponse::ok(deduped)))
 }
 
-/// TCP 端口扫描 + URL 验证兜底
-async fn scan_network_fallback() -> Vec<CameraDiscovery> {
+/// TCP 全方法扫描：同时探测 ONVIF、RTSP、HTTP 通用接口、品牌私有端口
+async fn scan_network_all_methods() -> Vec<CameraDiscovery> {
     let local_ips = match local_ip_address::list_afinet_netifas() {
         Ok(ips) => ips.into_iter()
             .filter(|(_, ip)| ip.is_ipv4() && !ip.is_loopback())
@@ -184,8 +212,18 @@ async fn scan_network_fallback() -> Vec<CameraDiscovery> {
         return Vec::new();
     }
 
-    let ports = vec![80u16, 8000, 8080, 554];
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(50));
+    // 扩大端口范围：标准 + 品牌私有 + 备选
+    let ports = vec![
+        80u16, 8000, 8080,  // ONVIF / Web 标准端口
+        554, 8554,          // RTSP 标准 + 备选
+        37777, 37778,       // 海康/大华私有端口
+        5000, 7001, 9000,   // 常见 NVR 管理端口
+        1935,               // RTMP
+        34567,              // 大华另一私有端口
+        1024,               // ONVIF 某些设备
+    ];
+
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(80));
     let mut all_results = Vec::new();
 
     for ip in local_ips {
@@ -194,9 +232,9 @@ async fn scan_network_fallback() -> Vec<CameraDiscovery> {
         if segments.len() != 4 { continue; }
         let prefix = format!("{}.{}.{}", segments[0], segments[1], segments[2]);
 
-        log::info!("端口扫描网段: {}.1-254，端口 {:?}", prefix, ports);
+        log::info!("[TCP扫描] 网段: {}.1-254，端口 {:?}", prefix, ports);
 
-        // 第1步：TCP 端口扫描（快速过滤）
+        // ========== 第1步：TCP 端口扫描（快速过滤） ==========
         let mut tcp_handles = Vec::new();
         for i in 1u8..=254 {
             for port in &ports {
@@ -210,7 +248,7 @@ async fn scan_network_fallback() -> Vec<CameraDiscovery> {
                         port,
                     );
                     match tokio::time::timeout(
-                        std::time::Duration::from_millis(300),
+                        std::time::Duration::from_millis(400),
                         tokio::net::TcpStream::connect(socket_addr)
                     ).await {
                         Ok(Ok(_)) => Some((addr, port)),
@@ -221,7 +259,6 @@ async fn scan_network_fallback() -> Vec<CameraDiscovery> {
             }
         }
 
-        // 收集 TCP 开放的结果
         let mut open_addrs: Vec<(String, u16)> = Vec::new();
         for h in tcp_handles {
             if let Ok(Some(pair)) = h.await {
@@ -229,117 +266,203 @@ async fn scan_network_fallback() -> Vec<CameraDiscovery> {
             }
         }
 
-        log::info!("TCP 端口扫描完成，{} 个开放端口待验证", open_addrs.len());
+        log::info!("[TCP扫描] {} 个开放端口待验证", open_addrs.len());
 
-        // 分离 RTSP (554) 和 HTTP 端口
-        let rtsp_addrs: Vec<(String, u16)> = open_addrs.iter()
-            .filter(|(_, p)| *p == 554)
-            .cloned()
-            .collect();
-        let http_addrs: Vec<(String, u16)> = open_addrs.iter()
-            .filter(|(_, p)| *p != 554)
-            .cloned()
-            .collect();
-
-        // 第2步A：RTSP 验证（对 554 端口发送 OPTIONS）
-        let mut rtsp_verify = Vec::new();
-        for (ip, port) in rtsp_addrs {
-            let sem = semaphore.clone();
-            let handle = tokio::spawn(async move {
-                let _permit = sem.acquire().await.ok()?;
-                let url = format!("rtsp://{}:{}/", ip, port);
-                match rtsp_options_probe(&ip, port).await {
-                    Ok(true) => {
-                        log::info!("RTSP 验证通过: {}", url);
-                        Some((ip, port, url))
-                    }
-                    _ => {
-                        log::debug!("RTSP 验证排除: {}", url);
-                        None
-                    }
-                }
-            });
-            rtsp_verify.push(handle);
+        // 按 IP 聚合开放端口
+        let mut ip_ports: std::collections::HashMap<String, Vec<u16>> = std::collections::HashMap::new();
+        for (ip, port) in &open_addrs {
+            ip_ports.entry(ip.clone()).or_default().push(*port);
         }
 
-        for h in rtsp_verify {
-            if let Ok(Some((ip, port, endpoint))) = h.await {
-                all_results.push(CameraDiscovery {
-                    endpoint: endpoint.clone(),
-                    xaddr: Some(endpoint),
-                    name: Some(format!("RTSP 设备 ({}:{})", ip, port)),
-                    scopes: vec![],
-                    types: vec![],
-                    source: "rtsp_scan".to_string(),
-                });
-            }
-        }
-
-        // 第2步B：SOAP 验证（对 HTTP 端口）
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(2))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
-
-        let soap_body = r#"<?xml version="1.0" encoding="UTF-8"?>
-<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:tds="http://www.onvif.org/ver10/device/wsdl">
-  <s:Body>
-    <tds:GetDeviceInformation/>
-  </s:Body>
-</s:Envelope>"#;
-
+        // ========== 第2步：协议验证（并行） ==========
         let mut verify_handles = Vec::new();
-        for (ip, port) in http_addrs {
-            let url = format!("http://{}:{}/onvif/device_service", ip, port);
-            let sem = semaphore.clone();
-            let c = client.clone();
-            let body = soap_body.to_string();
-            let handle = tokio::spawn(async move {
-                let _permit = sem.acquire().await.ok()?;
-                match c.post(&url)
-                    .header("Content-Type", "application/soap+xml; charset=utf-8")
-                    .header("SOAPAction", "http://www.onvif.org/ver10/device/wsdl/GetDeviceInformation")
-                    .body(body)
-                    .send().await
-                {
-                    Ok(resp) => {
-                        let status = resp.status();
-                        let text = resp.text().await.unwrap_or_default();
-                        let is_soap = text.contains("Envelope") || text.contains("soap") || text.contains("Body");
 
-                        if is_soap {
-                            log::info!("SOAP 验证通过: {} (HTTP {}, 响应含 SOAP)", url, status);
-                            Some((ip, port, url, true))
-                        } else {
-                            log::debug!("SOAP 验证排除: {} (HTTP {}, 非 SOAP 响应)", url, status);
-                            None
+        for (target_ip, ports_open) in ip_ports {
+            let sem = semaphore.clone();
+            let ports_clone = ports_open.clone();
+
+            let handle = tokio::spawn(async move {
+                let mut discoveries = Vec::new();
+
+                // 2A. RTSP 验证（554 / 8554）
+                for port in [554u16, 8554] {
+                    if ports_clone.contains(&port) {
+                        let url = format!("rtsp://{}:{}/", target_ip, port);
+                        match rtsp_options_probe(&target_ip, port).await {
+                            Ok(true) => {
+                                log::info!("[RTSP] 验证通过: {}", url);
+                                discoveries.push(CameraDiscovery {
+                                    endpoint: url.clone(),
+                                    xaddr: Some(url),
+                                    name: Some(format!("RTSP 设备 ({}:{})", target_ip, port)),
+                                    scopes: vec![],
+                                    types: vec![],
+                                    source: "rtsp_scan".to_string(),
+                                });
+                            }
+                            _ => log::debug!("[RTSP] 验证排除: {}", url),
                         }
                     }
-                    Err(e) => {
-                        log::debug!("SOAP 请求失败: {} — {}", url, e);
-                        None
+                }
+
+                // 2B. ONVIF SOAP 验证（80 / 8000 / 8080 / 1024）
+                for port in [80u16, 8000, 8080, 1024] {
+                    if ports_clone.contains(&port) {
+                        let url = format!("http://{}:{}/onvif/device_service", target_ip, port);
+                        match is_onvif_endpoint(&url).await {
+                            Ok(true) => {
+                                log::info!("[ONVIF] SOAP 验证通过: {}", url);
+                                discoveries.push(CameraDiscovery {
+                                    endpoint: url.clone(),
+                                    xaddr: Some(url.clone()),
+                                    name: Some(format!("ONVIF 设备 ({}:{})", target_ip, port)),
+                                    scopes: vec![],
+                                    types: vec![],
+                                    source: "port_scan".to_string(),
+                                });
+                            }
+                            _ => log::debug!("[ONVIF] SOAP 验证排除: {}", url),
+                        }
                     }
                 }
+
+                // 2C. HTTP 通用探测（任何 HTTP 端口都尝试 GET / 看是不是摄像头/NVR Web 界面）
+                for port in [80u16, 8000, 8080, 5000, 7001, 9000] {
+                    if ports_clone.contains(&port) {
+                        let url = format!("http://{}:{}/", target_ip, port);
+                        match http_device_probe(&target_ip, port).await {
+                            Some(name) => {
+                                log::info!("[HTTP] 发现设备: {} — {}", url, name);
+                                discoveries.push(CameraDiscovery {
+                                    endpoint: url,
+                                    xaddr: Some(format!("http://{}:{}", target_ip, port)),
+                                    name: Some(name),
+                                    scopes: vec![],
+                                    types: vec![],
+                                    source: "http_probe".to_string(),
+                                });
+                            }
+                            None => log::debug!("[HTTP] 无响应或不是设备: http://{}:{}/", target_ip, port),
+                        }
+                    }
+                }
+
+                // 2D. 品牌私有端口探测（仅记录开放，作为线索）
+                for port in [37777u16, 37778, 34567] {
+                    if ports_clone.contains(&port) {
+                        let brand = match port {
+                            37777 => "海康私有端口",
+                            37778 => "大华私有端口",
+                            34567 => "大华私有端口",
+                            _ => "未知品牌端口",
+                        };
+                        log::info!("[私有端口] {} 开放 {} — {}", target_ip, port, brand);
+                        // 私有端口通常不直接提供 HTTP/RTSP，作为线索加入结果
+                        discoveries.push(CameraDiscovery {
+                            endpoint: format!("{}:{}", target_ip, port),
+                            xaddr: Some(format!("{}:{}", target_ip, port)),
+                            name: Some(format!("{} (端口{})", brand, port)),
+                            scopes: vec![],
+                            types: vec![],
+                            source: "private_port".to_string(),
+                        });
+                    }
+                }
+
+                discoveries
             });
             verify_handles.push(handle);
         }
 
         for h in verify_handles {
-            if let Ok(Some((ip, port, endpoint, _confirmed))) = h.await {
-                all_results.push(CameraDiscovery {
-                    endpoint: endpoint.clone(),
-                    xaddr: Some(endpoint),
-                    name: Some(format!("ONVIF 设备 ({}:{})", ip, port)),
-                    scopes: vec![],
-                    types: vec![],
-                    source: "port_scan".to_string(),
-                });
+            if let Ok(mut discoveries) = h.await {
+                all_results.append(&mut discoveries);
             }
         }
     }
 
     all_results
 }
+
+/// HTTP 通用探测：尝试 GET / 并分析响应，识别是否为摄像头/NVR
+async fn http_device_probe(ip: &str, port: u16) -> Option<String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .unwrap_or_default();
+
+    let url = format!("http://{}:{}/", ip, port);
+    match client.get(&url).send().await {
+        Ok(resp) => {
+            let status = resp.status();
+            let headers = resp.headers().clone();
+            let text = resp.text().await.unwrap_or_default();
+            let text_lower = text.to_lowercase();
+
+            // 检查 Server 头
+            let server_hint = headers.get("server")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_lowercase());
+
+            // 识别品牌
+            let mut brand = None;
+            if let Some(ref s) = server_hint {
+                if s.contains("hikvision") || s.contains("dvr") || s.contains("nvr") {
+                    brand = Some("海康威视");
+                } else if s.contains("dahua") {
+                    brand = Some("大华");
+                } else if s.contains("tp-link") || s.contains("tplink") {
+                    brand = Some("TP-LINK");
+                }
+            }
+
+            if brand.is_none() {
+                if text_lower.contains("hikvision") { brand = Some("海康威视"); }
+                else if text_lower.contains("dahua") { brand = Some("大华"); }
+                else if text_lower.contains("uniview") || text_lower.contains("unv") { brand = Some("宇视"); }
+                else if text_lower.contains("tp-link") || text_lower.contains("tplink") { brand = Some("TP-LINK"); }
+            }
+
+            // 检查是否有摄像头/NVR 页面特征
+            let is_device_page = text_lower.contains("login")
+                || text_lower.contains("摄像头")
+                || text_lower.contains("摄像机")
+                || text_lower.contains("nvr")
+                || text_lower.contains("dvr")
+                || text_lower.contains("ipc")
+                || text_lower.contains("onvif")
+                || text_lower.contains("live")
+                || text_lower.contains("preview")
+                || text_lower.contains("监控")
+                || text_lower.contains("video")
+                || text_lower.contains("rtsp");
+
+            let is_camera_server = server_hint.as_ref()
+                .map(|s| s.contains("camera") || s.contains("dvr") || s.contains("nvr") || s.contains("embedded"))
+                .unwrap_or(false);
+
+            if is_device_page || is_camera_server || brand.is_some() {
+                let name = if let Some(b) = brand {
+                    format!("{} 设备 (HTTP {})", b, status)
+                } else if is_camera_server {
+                    format!("监控设备 (HTTP {})", status)
+                } else {
+                    format!("可能的监控设备 (HTTP {})", status)
+                };
+                return Some(name);
+            }
+
+            // 如果是 401 未授权，也可能是设备
+            if status == 401 {
+                return Some(format!("需要认证的设备 (HTTP 401)"));
+            }
+
+            None
+        }
+        Err(_) => None,
+    }
+}
+
 
 /// RTSP OPTIONS 探测
 async fn rtsp_options_probe(ip: &str, port: u16) -> Result<bool, String> {
