@@ -2,7 +2,8 @@ use actix_web::{delete, get, post, put, web, HttpResponse, Result};
 use serde::{Deserialize, Serialize};
 use crate::{
     db::db_path,
-    models::{ApiResponse, CameraDiscovery, Tool, rtsp_templates},
+    models::{ApiResponse, CameraDiscovery, Tool},
+    strix,
 };
 use chrono::Local;
 use rusqlite::Connection;
@@ -78,16 +79,17 @@ pub async fn delete_tool(path: web::Path<i64>) -> Result<HttpResponse> {
     Ok(HttpResponse::Ok().json(ApiResponse::ok("deleted")))
 }
 
-// ===================== 品牌模板 =====================
+// ===================== Strix URL 模板 =====================
 
 #[get("/api/tools/rtsp-templates")]
 pub async fn list_rtsp_templates() -> Result<HttpResponse> {
-    Ok(HttpResponse::Ok().json(ApiResponse::ok(rtsp_templates())))
+    let patterns = strix::get_patterns();
+    Ok(HttpResponse::Ok().json(ApiResponse::ok(patterns)))
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RtspUrlRequest {
-    pub brand: String,
+    pub pattern_name: String,
     pub ip: String,
     pub username: String,
     pub password: String,
@@ -96,13 +98,13 @@ pub struct RtspUrlRequest {
 
 #[post("/api/tools/rtsp-url")]
 pub async fn generate_rtsp_url(body: web::Json<RtspUrlRequest>) -> Result<HttpResponse> {
-    let templates = rtsp_templates();
-    let tmpl = templates.iter()
-        .find(|t| t.brand == body.brand)
-        .ok_or_else(|| ApiError("未知品牌".to_string()))?;
+    let patterns = strix::get_patterns();
+    let pattern = patterns.iter()
+        .find(|p| p.name == body.pattern_name)
+        .ok_or_else(|| ApiError("未知模式".to_string()))?;
 
     let ch = body.channel.max(1);
-    let url = tmpl.main_stream
+    let url = pattern.template
         .replace("{user}", &body.username)
         .replace("{pass}", &body.password)
         .replace("{ip}", &body.ip)
@@ -110,7 +112,7 @@ pub async fn generate_rtsp_url(body: web::Json<RtspUrlRequest>) -> Result<HttpRe
 
     Ok(HttpResponse::Ok().json(ApiResponse::ok(serde_json::json!({
         "rtsp_url": url,
-        "brand": body.brand,
+        "pattern_name": body.pattern_name,
         "channel": ch,
     }))))
 }
@@ -548,33 +550,57 @@ pub async fn probe_device(body: web::Json<ProbeRequest>) -> Result<HttpResponse>
 
     log::info!("开始探测设备: {}，账号: {}", ip, username);
 
-    // 阶段1：尝试所有品牌模板的通道 1，确定品牌
-    let templates = rtsp_templates();
-    let mut detected_brand: Option<String> = None;
+    // 阶段1：并发尝试所有 Strix 模式的通道 1，确定品牌和 URL 模式
+    let patterns = strix::get_patterns();
+    let mut detected_pattern: Option<String> = None;
 
-    log::info!("阶段1：尝试 {} 种品牌模板的通道 1...", templates.len());
+    log::info!("阶段1：并发尝试 {} 种 Strix URL 模式的通道 1...", patterns.len());
 
-    for tmpl in &templates {
-        let url = tmpl.main_stream
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(8));
+    let mut handles = Vec::new();
+
+    for (idx, pattern) in patterns.iter().enumerate() {
+        let url = pattern.template
             .replace("{user}", username)
             .replace("{pass}", password)
             .replace("{ip}", ip)
             .replace("{channel}", "1");
+        let pattern_name = pattern.name.clone();
+        let sem = semaphore.clone();
 
-        log::info!("尝试品牌: {} — {}", tmpl.brand, url);
-        let (success, snapshot, _) = verify_rtsp_url(&url, 1).await;
+        let handle = tokio::spawn(async move {
+            let _permit = sem.acquire().await.ok()?;
+            log::debug!("尝试模式 [{}]: {}", pattern_name, url);
+            let (success, _snapshot, _error) = verify_rtsp_url(&url, 1).await;
+            if success {
+                log::info!("✅ 模式识别成功: {}", pattern_name);
+                Some(pattern_name)
+            } else {
+                None
+            }
+        });
+        handles.push((idx, handle));
+    }
 
-        if success {
-            log::info!("✅ 品牌识别成功: {}", tmpl.brand);
-            detected_brand = Some(tmpl.brand.clone());
+    // 收集第一个成功的模式
+    for (_idx, handle) in handles {
+        if let Ok(Some(name)) = handle.await {
+            detected_pattern = Some(name);
             break;
         }
     }
 
-    let brand = match detected_brand {
-        Some(b) => b,
+    let (brand, main_pattern) = match detected_pattern {
+        Some(pattern_name) => {
+            let brand = strix::guess_brand_from_pattern(&pattern_name);
+            // 找到该品牌的主码流模板
+            let main = patterns.iter()
+                .find(|p| p.name == pattern_name || (strix::guess_brand_from_pattern(&p.name) == brand && p.stream_type == "main"))
+                .cloned();
+            (brand, main)
+        }
         None => {
-            log::warn!("所有品牌模板的通道 1 均验证失败");
+            log::warn!("所有 Strix URL 模式的通道 1 均验证失败");
             return Ok(HttpResponse::Ok().json(ApiResponse::ok(ProbeResult {
                 ip: ip.clone(),
                 brand: "unknown".to_string(),
@@ -583,26 +609,42 @@ pub async fn probe_device(body: web::Json<ProbeRequest>) -> Result<HttpResponse>
                     url: "".to_string(),
                     success: false,
                     snapshot_base64: None,
-                    error: Some("无法识别设备品牌，请检查账号密码或手动添加".to_string()),
+                    error: Some("无法识别设备，请检查账号密码或 RTSP 是否开启".to_string()),
                 }],
             })));
         }
     };
 
-    // 阶段2：用识别出的品牌验证通道 1-16
-    let tmpl = templates.iter().find(|t| t.brand == brand).unwrap();
-    log::info!("阶段2：用品牌 {} 验证通道 1-16...", brand);
+    // 阶段2：用识别出的模式验证通道 1-16
+    let tmpl = match main_pattern {
+        Some(p) => p,
+        None => {
+            return Ok(HttpResponse::Ok().json(ApiResponse::ok(ProbeResult {
+                ip: ip.clone(),
+                brand,
+                channels: vec![ProbeChannelResult {
+                    channel: 1,
+                    url: "".to_string(),
+                    success: false,
+                    snapshot_base64: None,
+                    error: Some("未找到主码流模板".to_string()),
+                }],
+            })));
+        }
+    };
 
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(4));
-    let mut handles = Vec::new();
+    log::info!("阶段2：用模式 '{}' 验证通道 1-16...", tmpl.name);
+
+    let semaphore2 = Arc::new(tokio::sync::Semaphore::new(4));
+    let mut handles2 = Vec::new();
 
     for ch in 1..=16 {
-        let url = tmpl.main_stream
+        let url = tmpl.template
             .replace("{user}", username)
             .replace("{pass}", password)
             .replace("{ip}", ip)
             .replace("{channel}", &ch.to_string());
-        let sem = semaphore.clone();
+        let sem = semaphore2.clone();
         let ch_i32 = ch as i32;
 
         let handle = tokio::spawn(async move {
@@ -617,11 +659,11 @@ pub async fn probe_device(body: web::Json<ProbeRequest>) -> Result<HttpResponse>
                 error,
             })
         });
-        handles.push(handle);
+        handles2.push(handle);
     }
 
     let mut channels = Vec::new();
-    for h in handles {
+    for h in handles2 {
         if let Ok(Some(result)) = h.await {
             channels.push(result);
         }

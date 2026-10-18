@@ -3,6 +3,7 @@ mod credential_store;
 mod db;
 mod http_pusher;
 mod models;
+mod strix;
 mod task_engine;
 
 use actix_cors::Cors;

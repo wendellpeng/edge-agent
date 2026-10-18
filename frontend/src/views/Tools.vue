@@ -138,8 +138,14 @@ function selectChannel(ch) {
 async function generateRtsp() {
   try {
     const ip = extractIp(form.value.endpoint) || form.value.endpoint;
+    // 使用第一个 Strix 模板生成（通用模式）
+    const pattern = rtspTemplates.value[0];
+    if (!pattern) {
+      alert("未加载 RTSP 模板");
+      return;
+    }
     const result = await api.generateRtspUrl({
-      brand: form.value.brand,
+      pattern_name: pattern.name,
       ip: ip,
       username: form.value.username || "admin",
       password: form.value.password || "",
@@ -216,13 +222,12 @@ async function saveWizardTools() {
   }
 
   const ip = wizardProbeResult.value.ip;
-  const brand = wizardProbeResult.value.brand || "";
-  const brandName = rtspTemplates.value.find(t => t.brand === brand)?.name || brand;
+  const brand = wizardProbeResult.value.brand || "未知品牌";
 
   for (const ch of selected) {
     const tool = {
       tool_type: "rtsp_camera",
-      name: `${brandName} ${ip} 通道${ch.channel}`,
+      name: `${brand} ${ip} 通道${ch.channel}`,
       endpoint: ch.url,
       xaddr: "",
       location: "",
@@ -280,25 +285,9 @@ onMounted(() => {
             </select>
           </div>
 
-          <!-- RTSP 品牌选择 -->
-          <div v-if="isRtsp" class="field">
-            <label>品牌模板</label>
-            <select v-model="form.brand">
-              <option value="">手动输入 URL</option>
-              <option v-for="t in rtspTemplates" :key="t.brand" :value="t.brand">{{ t.name }}</option>
-            </select>
-          </div>
-
           <div class="field full">
             <label>{{ isRtsp ? 'RTSP URL' : 'Endpoint' }}</label>
             <input v-model="form.endpoint" :placeholder="isRtsp ? 'rtsp://admin:pass@192.168.0.104:554/Streaming/Channels/101' : 'http://192.168.1.100:8000/onvif/device_service'" />
-          </div>
-
-          <!-- RTSP 自动生成 -->
-          <div v-if="isRtsp && form.brand" class="field" style="grid-column: 1 / -1;">
-            <button type="button" class="btn-secondary" style="width: 100%; padding: 8px;" @click="generateRtsp">
-              根据品牌模板生成 RTSP URL
-            </button>
           </div>
 
           <div v-if="isOnvif" class="field"><label>XAddr</label><input v-model="form.xaddr" placeholder="可选" /></div>
