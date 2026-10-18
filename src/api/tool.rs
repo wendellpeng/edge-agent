@@ -481,6 +481,15 @@ pub struct ProbeResult {
     pub ip: String,
     pub brand: String,  // 识别出的品牌
     pub channels: Vec<ProbeChannelResult>,
+    pub probe_log: Vec<ProbeLogEntry>, // 阶段1的所有尝试记录
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ProbeLogEntry {
+    pub pattern_name: String,
+    pub url: String,
+    pub success: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -492,8 +501,27 @@ pub struct ProbeChannelResult {
     pub error: Option<String>,
 }
 
-/// 用 ffmpeg 验证单个 RTSP URL 能否取图，返回 (success, base64, error)
+/// 用 ffmpeg 验证单个 RTSP URL 能否取图，先尝试 TCP 再尝试 UDP
+/// 返回 (success, base64, error)
 async fn verify_rtsp_url(url: &str, channel: i32) -> (bool, Option<String>, Option<String>) {
+    // 先尝试 TCP
+    let result = verify_rtsp_with_transport(url, channel, "tcp").await;
+    if result.0 {
+        return result;
+    }
+
+    // TCP 失败，尝试 UDP
+    log::info!("TCP 失败，尝试 UDP: {}", url);
+    let udp_result = verify_rtsp_with_transport(url, channel, "udp").await;
+    if udp_result.0 {
+        return udp_result;
+    }
+
+    // 都失败，返回 TCP 的错误（通常更有参考价值）
+    result
+}
+
+async fn verify_rtsp_with_transport(url: &str, channel: i32, transport: &str) -> (bool, Option<String>, Option<String>) {
     use base64::{engine::general_purpose::STANDARD, Engine};
 
     let cache_dir = dirs::cache_dir()
@@ -503,12 +531,14 @@ async fn verify_rtsp_url(url: &str, channel: i32) -> (bool, Option<String>, Opti
         return (false, None, Some(format!("创建缓存目录失败: {}", e)));
     }
 
-    let filename = format!("probe_{}_{}.jpg", channel, Local::now().format("%H%M%S%3f"));
+    let filename = format!("probe_{}_{}_{}.jpg", channel, transport, Local::now().format("%H%M%S%3f"));
     let path = cache_dir.join(&filename);
 
     let output = match tokio::process::Command::new("ffmpeg")
         .args(&[
-            "-y", "-rtsp_transport", "tcp",
+            "-y",
+            "-rtsp_transport", transport,
+            "-stimeout", "5000000", // 5秒连接超时（microseconds）
             "-i", url,
             "-vframes", "1",
             "-q:v", "2",
@@ -520,13 +550,15 @@ async fn verify_rtsp_url(url: &str, channel: i32) -> (bool, Option<String>, Opti
         .output().await
     {
         Ok(o) => o,
-        Err(e) => return (false, None, Some(format!("ffmpeg 执行失败: {}。请确认系统已安装 ffmpeg", e))),
+        Err(e) => return (false, None, Some(format!("ffmpeg 执行失败: {}", e))),
     };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         std::fs::remove_file(&path).ok();
-        return (false, None, Some(format!("ffmpeg 失败: {}", stderr)));
+        // 提取关键错误信息（ffmpeg 输出很长，只取关键行）
+        let summary = extract_ffmpeg_error(&stderr);
+        return (false, None, Some(format!("[{}] {}", transport.to_uppercase(), summary)));
     }
 
     match std::fs::read(&path) {
@@ -540,6 +572,34 @@ async fn verify_rtsp_url(url: &str, channel: i32) -> (bool, Option<String>, Opti
             (false, None, Some(format!("读取截图失败: {}", e)))
         }
     }
+}
+
+/// 从 ffmpeg stderr 中提取关键错误信息
+fn extract_ffmpeg_error(stderr: &str) -> String {
+    let lines: Vec<&str> = stderr.lines().collect();
+
+    // 优先查找这些关键错误模式
+    for line in &lines {
+        let lower = line.to_lowercase();
+        if lower.contains("unauthorized") || lower.contains("401") {
+            return "认证失败：账号或密码错误".to_string();
+        }
+        if lower.contains("connection refused") {
+            return "连接被拒绝：端口未开放或服务未启动".to_string();
+        }
+        if lower.contains("connection timed out") || lower.contains("timeout") {
+            return "连接超时：设备无响应".to_string();
+        }
+        if lower.contains("no route to host") || lower.contains("network is unreachable") {
+            return "网络不可达：设备离线或不在同一网段".to_string();
+        }
+        if lower.contains("invalid data") || lower.contains("not found") {
+            return "URL 无效：通道或路径不存在".to_string();
+        }
+    }
+
+    // 没找到关键模式，返回前 200 字符
+    stderr.chars().take(200).collect::<String>().trim().to_string()
 }
 
 #[post("/api/tools/probe")]
@@ -559,7 +619,7 @@ pub async fn probe_device(body: web::Json<ProbeRequest>) -> Result<HttpResponse>
     let semaphore = Arc::new(tokio::sync::Semaphore::new(8));
     let mut handles = Vec::new();
 
-    for (idx, pattern) in patterns.iter().enumerate() {
+    for (_idx, pattern) in patterns.iter().enumerate() {
         let url = pattern.template
             .replace("{user}", username)
             .replace("{pass}", password)
@@ -571,24 +631,36 @@ pub async fn probe_device(body: web::Json<ProbeRequest>) -> Result<HttpResponse>
         let handle = tokio::spawn(async move {
             let _permit = sem.acquire().await.ok()?;
             log::debug!("尝试模式 [{}]: {}", pattern_name, url);
-            let (success, _snapshot, _error) = verify_rtsp_url(&url, 1).await;
+            let (success, _snapshot, error) = verify_rtsp_url(&url, 1).await;
+            let log_entry = ProbeLogEntry {
+                pattern_name: pattern_name.clone(),
+                url: url.clone(),
+                success,
+                error: error.clone(),
+            };
             if success {
                 log::info!("✅ 模式识别成功: {}", pattern_name);
-                Some(pattern_name)
+                Some((pattern_name, log_entry))
             } else {
-                None
+                Some(("".to_string(), log_entry))
             }
         });
-        handles.push((idx, handle));
+        handles.push(handle);
     }
 
-    // 收集第一个成功的模式
-    for (_idx, handle) in handles {
-        if let Ok(Some(name)) = handle.await {
-            detected_pattern = Some(name);
-            break;
+    // 收集所有尝试结果
+    let mut probe_log: Vec<ProbeLogEntry> = Vec::new();
+    for handle in handles {
+        if let Ok(Some((name, entry))) = handle.await {
+            probe_log.push(entry);
+            if !name.is_empty() && detected_pattern.is_none() {
+                detected_pattern = Some(name);
+            }
         }
     }
+
+    // 按尝试顺序排序（保持原始顺序）
+    probe_log.sort_by_key(|e| e.pattern_name.clone());
 
     let (brand, main_pattern) = match detected_pattern {
         Some(pattern_name) => {
@@ -611,6 +683,7 @@ pub async fn probe_device(body: web::Json<ProbeRequest>) -> Result<HttpResponse>
                     snapshot_base64: None,
                     error: Some("无法识别设备，请检查账号密码或 RTSP 是否开启".to_string()),
                 }],
+                probe_log,
             })));
         }
     };
@@ -629,6 +702,7 @@ pub async fn probe_device(body: web::Json<ProbeRequest>) -> Result<HttpResponse>
                     snapshot_base64: None,
                     error: Some("未找到主码流模板".to_string()),
                 }],
+                probe_log,
             })));
         }
     };
@@ -679,6 +753,7 @@ pub async fn probe_device(body: web::Json<ProbeRequest>) -> Result<HttpResponse>
         ip: ip.clone(),
         brand,
         channels,
+        probe_log,
     })))
 }
 

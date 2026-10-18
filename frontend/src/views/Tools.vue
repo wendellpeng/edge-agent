@@ -27,6 +27,8 @@ const wizardPassword = ref("");
 const wizardProbing = ref(false);
 const wizardChannels = ref([]);
 const wizardSelected = ref([]);
+const wizardProbeLog = ref([]);
+const showProbeLog = ref(false);
 
 const form = ref({
   id: 0, tool_type: "onvif_camera", name: "", endpoint: "", xaddr: "",
@@ -181,6 +183,8 @@ function openWizard(device) {
   wizardProbing.value = false;
   wizardChannels.value = [];
   wizardSelected.value = [];
+  wizardProbeLog.value = [];
+  showProbeLog.value = false;
   showWizard.value = true;
 }
 
@@ -201,6 +205,7 @@ async function doProbe() {
 
     wizardProbeResult.value = result;
     wizardChannels.value = result.channels || [];
+    wizardProbeLog.value = result.probe_log || [];
     // 默认选中所有成功的通道
     wizardSelected.value = wizardChannels.value
       .filter(c => c.success)
@@ -372,11 +377,24 @@ onMounted(() => {
 
         <!-- Step 3: 显示通道结果 -->
         <div v-if="wizardStep === 3" class="wizard-step">
-          <div style="margin-bottom:12px; display:flex; align-items:center; gap:8px;">
+          <div style="margin-bottom:12px; display:flex; align-items:center; gap:8px; justify-content:space-between;">
             <span style="color:#888; font-size:13px;">
               品牌: <strong style="color:#e8e8e8;">{{ wizardProbeResult?.brand || '未知' }}</strong> |
               成功: <strong style="color:var(--green);">{{ wizardChannels.filter(c=>c.success).length }}</strong> / {{ wizardChannels.length }} 通道
             </span>
+            <button class="btn-secondary" style="padding:4px 10px; font-size:12px;" @click="showProbeLog = !showProbeLog">
+              {{ showProbeLog ? '隐藏' : '查看' }}探测日志 ({{ wizardProbeLog.length }})
+            </button>
+          </div>
+
+          <!-- 探测日志面板 -->
+          <div v-if="showProbeLog" style="max-height:300px; overflow-y:auto; background:#1a1a1a; border:1px solid #333; border-radius:8px; padding:10px; margin-bottom:12px;">
+            <div v-for="(log, idx) in wizardProbeLog" :key="idx" style="font-size:11px; padding:4px 0; border-bottom:1px solid #222;">
+              <span :style="log.success ? 'color:var(--green);' : 'color:#e74c3c;'">{{ log.success ? '✅' : '❌' }}</span>
+              <span style="color:#888; margin-left:6px;">{{ log.pattern_name }}</span>
+              <div style="color:#555; margin-left:20px; margin-top:2px;">{{ log.url }}</div>
+              <div v-if="log.error" style="color:#c0392b; margin-left:20px; margin-top:2px;">{{ log.error }}</div>
+            </div>
           </div>
 
           <div class="channel-grid">
