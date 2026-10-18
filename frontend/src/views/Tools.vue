@@ -19,13 +19,13 @@ const rtspTemplates = ref([]);
 
 // 接入向导
 const showWizard = ref(false);
-const wizardStep = ref(1); // 1:探测结果 2:输入凭据 3:验证中 4:验证结果
+const wizardStep = ref(1); // 1:输入凭据 2:探测中 3:显示结果
 const wizardDevice = ref(null);
 const wizardProbeResult = ref(null);
 const wizardUsername = ref("admin");
 const wizardPassword = ref("");
-const wizardVerifying = ref(false);
-const wizardResults = ref([]);
+const wizardProbing = ref(false);
+const wizardChannels = ref([]);
 const wizardSelected = ref([]);
 
 const form = ref({
@@ -88,7 +88,7 @@ async function doDiscover() {
   try {
     discovered.value = await api.discoverTools(discoverTimeout.value);
     if (!discovered.value.length) {
-      discoverHint.value = "未扫描到设备。可能原因：1) 摄像头未开启 ONVIF/WS-Discovery；2) 与当前设备不在同一网段；3) macOS 防火墙拦截了 UDP 多播。建议直接手动添加接入。";
+      discoverHint.value = "未扫描到 RTSP 设备。可能原因：1) 设备未开启 RTSP（554端口）；2) 与当前设备不在同一网段；3) 防火墙拦截 554 端口。建议直接手动添加接入。";
     }
   } catch (e) { alert("扫描失败: " + e); }
   finally { discovering.value = false; }
@@ -98,9 +98,7 @@ function selectDiscovered(device) {
   form.value.endpoint = device.endpoint;
   form.value.xaddr = device.xaddr || "";
   form.value.name = device.name || device.endpoint;
-  if (device.source === "rtsp_scan") {
-    form.value.tool_type = "rtsp_camera";
-  }
+  form.value.tool_type = "rtsp_camera";
   showDiscover.value = false;
   showForm.value = true;
 }
@@ -174,78 +172,63 @@ function openWizard(device) {
   wizardProbeResult.value = null;
   wizardUsername.value = "admin";
   wizardPassword.value = "";
-  wizardVerifying.value = false;
-  wizardResults.value = [];
+  wizardProbing.value = false;
+  wizardChannels.value = [];
   wizardSelected.value = [];
   showWizard.value = true;
-  doProbe(device);
 }
 
-async function doProbe(device) {
-  try {
-    const ip = extractIp(device.endpoint) || device.endpoint;
-    wizardProbeResult.value = await api.probeDevice({ ip });
-    wizardStep.value = 2;
-  } catch (e) {
-    alert("探测失败: " + e);
-    showWizard.value = false;
-  }
-}
+async function doProbe() {
+  if (!wizardDevice.value) return;
+  const ip = extractIp(wizardDevice.value.endpoint) || wizardDevice.value.endpoint;
 
-async function doVerify() {
-  if (!wizardProbeResult.value) return;
-  wizardStep.value = 3;
-  wizardVerifying.value = true;
-  wizardResults.value = [];
+  wizardStep.value = 2;
+  wizardProbing.value = true;
+  wizardChannels.value = [];
 
   try {
-    const candidates = wizardProbeResult.value.candidates
-      .filter(c => c.candidate_type === "rtsp");
-
-    if (candidates.length === 0) {
-      alert("未找到可验证的 RTSP 候选通道");
-      wizardStep.value = 2;
-      return;
-    }
-
-    const results = await api.verifyCandidates({
-      ip: wizardProbeResult.value.ip,
+    const result = await api.probeDevice({
+      ip,
       username: wizardUsername.value,
       password: wizardPassword.value,
-      candidates,
     });
 
-    wizardResults.value = results;
-    wizardSelected.value = results.filter(r => r.success).map(r => r.channel);
-    wizardStep.value = 4;
+    wizardProbeResult.value = result;
+    wizardChannels.value = result.channels || [];
+    // 默认选中所有成功的通道
+    wizardSelected.value = wizardChannels.value
+      .filter(c => c.success)
+      .map(c => c.channel);
+    wizardStep.value = 3;
   } catch (e) {
-    alert("验证失败: " + e);
-    wizardStep.value = 2;
+    alert("探测失败: " + e);
+    wizardStep.value = 1;
   } finally {
-    wizardVerifying.value = false;
+    wizardProbing.value = false;
   }
 }
 
 async function saveWizardTools() {
-  const selected = wizardResults.value.filter(r => wizardSelected.value.includes(r.channel));
+  const selected = wizardChannels.value.filter(c => wizardSelected.value.includes(c.channel));
   if (selected.length === 0) {
     alert("请至少选择一个验证成功的通道");
     return;
   }
 
   const ip = wizardProbeResult.value.ip;
-  const brand = wizardProbeResult.value.guessed_brand || "";
+  const brand = wizardProbeResult.value.brand || "";
+  const brandName = rtspTemplates.value.find(t => t.brand === brand)?.name || brand;
 
-  for (const result of selected) {
+  for (const ch of selected) {
     const tool = {
       tool_type: "rtsp_camera",
-      name: `NVR ${ip} 通道${result.channel}`,
-      endpoint: result.url,
+      name: `${brandName} ${ip} 通道${ch.channel}`,
+      endpoint: ch.url,
       xaddr: "",
       location: "",
       username: wizardUsername.value,
       password: wizardPassword.value,
-      channel: result.channel,
+      channel: ch.channel,
       brand: brand,
       enabled: true,
     };
@@ -341,7 +324,7 @@ onMounted(() => {
     <!-- 扫描发现弹窗 -->
     <div v-if="showDiscover" class="modal-overlay" @click.self="showDiscover = false">
       <div class="modal modal-wide">
-        <h3>扫描局域网设备</h3>
+        <h3>扫描局域网 RTSP 设备</h3>
         <div class="toolbar" style="margin-bottom:12px; align-items:center;">
           <button :disabled="discovering" @click="doDiscover">{{ discovering ? "扫描中…" : "重新扫描" }}</button>
           <div class="field" style="margin:0; flex-direction:row; align-items:center; gap:8px;">
@@ -356,15 +339,14 @@ onMounted(() => {
         <div v-if="discoverHint" class="hint-box">{{ discoverHint }}</div>
         <div v-if="discovered.length" class="device-list">
           <div v-for="d in discovered" :key="d.endpoint" class="device-card">
-            <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
-              <div class="device-name">{{ d.name || "未命名设备" }}</div>
-              <span v-if="d.source === 'rtsp_scan'" class="badge badge-red">RTSP</span>
-              <span v-else-if="d.source === 'port_scan'" class="badge badge-yellow">端口扫描</span>
-              <span v-else-if="d.source === 'ws_discovery'" class="badge badge-blue">WS-Discovery</span>
+            <div style="display:flex; align-items:center; justify-content:space-between;">
+              <div>
+                <div class="device-name">{{ d.name || "RTSP 设备" }}</div>
+                <div class="device-info">{{ d.endpoint }}</div>
+              </div>
+              <span class="badge badge-red">RTSP 554</span>
             </div>
-            <div class="device-info">{{ d.endpoint }}</div>
-            <div class="device-info">{{ d.xaddr || "" }}</div>
-            <div style="margin-top:8px; display:flex; gap:8px;">
+            <div style="margin-top:10px; display:flex; gap:8px;">
               <button class="btn-small" @click="selectDiscovered(d)">直接添加</button>
               <button class="btn-small btn-wizard" @click="openWizard(d)">接入向导</button>
             </div>
@@ -377,63 +359,55 @@ onMounted(() => {
     <!-- 接入向导弹窗 -->
     <div v-if="showWizard" class="modal-overlay" @click.self="showWizard = false">
       <div class="modal modal-wide">
-        <h3>设备接入向导</h3>
+        <h3>设备接入向导 — {{ extractIp(wizardDevice?.endpoint) }}</h3>
 
-        <!-- Step 1: 探测中 -->
+        <!-- Step 1: 输入凭据 -->
         <div v-if="wizardStep === 1" class="wizard-step">
-          <p class="empty">正在探测设备能力和候选通道…</p>
-        </div>
-
-        <!-- Step 2: 输入凭据 -->
-        <div v-if="wizardStep === 2" class="wizard-step">
-          <div v-if="wizardProbeResult" class="probe-info">
-            <div class="info-row"><span class="info-label">IP:</span><span class="info-value">{{ wizardProbeResult.ip }}</span></div>
-            <div class="info-row"><span class="info-label">开放端口:</span><span class="info-value">{{ wizardProbeResult.ports_open.join(', ') }}</span></div>
-            <div class="info-row"><span class="info-label">ONVIF:</span><span class="info-value">{{ wizardProbeResult.onvif_endpoint || '未检测到' }}</span></div>
-            <div class="info-row"><span class="info-label">RTSP:</span><span class="info-value">{{ wizardProbeResult.rtsp_accessible ? '可用' : '未检测到' }}</span></div>
-            <div class="info-row"><span class="info-label">猜测品牌:</span><span class="info-value">{{ wizardProbeResult.guessed_brand || '未知' }}</span></div>
-            <div class="info-row"><span class="info-label">候选通道:</span><span class="info-value">{{ wizardProbeResult.candidates.filter(c=>c.candidate_type==='rtsp').length }} 个 RTSP 候选</span></div>
-          </div>
-
-          <div class="form-grid" style="margin-top:16px;">
+          <p style="margin-bottom:12px; color:#888; font-size:13px;">检测到 RTSP 设备，请输入账号密码进行通道探测：</p>
+          <div class="form-grid">
             <div class="field"><label>账号</label><input v-model="wizardUsername" placeholder="admin" /></div>
             <div class="field"><label>密码</label><input v-model="wizardPassword" type="password" placeholder="密码" /></div>
           </div>
-
           <div class="modal-actions">
-            <button @click="doVerify" :disabled="wizardVerifying">{{ wizardVerifying ? "验证中…" : "验证取图" }}</button>
+            <button @click="doProbe" :disabled="wizardProbing">{{ wizardProbing ? "探测中…" : "探测通道" }}</button>
             <button class="btn-secondary" @click="showWizard = false">取消</button>
           </div>
         </div>
 
-        <!-- Step 3: 验证中 -->
-        <div v-if="wizardStep === 3" class="wizard-step">
-          <p class="empty">正在逐个验证候选通道，请稍候…</p>
+        <!-- Step 2: 探测中 -->
+        <div v-if="wizardStep === 2" class="wizard-step">
+          <p class="empty">正在尝试多种品牌模板验证通道，请稍候…</p>
           <div class="progress-bar"><div class="progress-fill"></div></div>
+          <p style="text-align:center; color:#888; font-size:12px; margin-top:8px;">先识别品牌，再验证通道 1-16</p>
         </div>
 
-        <!-- Step 4: 验证结果 -->
-        <div v-if="wizardStep === 4" class="wizard-step">
-          <p style="margin-bottom:12px; color:#888; font-size:13px;">验证完成，勾选要保存的通道：</p>
-          <div class="device-list">
-            <div v-for="r in wizardResults" :key="r.channel" class="device-card" :class="{ 'card-success': r.success, 'card-failed': !r.success }">
+        <!-- Step 3: 显示通道结果 -->
+        <div v-if="wizardStep === 3" class="wizard-step">
+          <div style="margin-bottom:12px; display:flex; align-items:center; gap:8px;">
+            <span style="color:#888; font-size:13px;">
+              品牌: <strong style="color:#e8e8e8;">{{ wizardProbeResult?.brand || '未知' }}</strong> |
+              成功: <strong style="color:var(--green);">{{ wizardChannels.filter(c=>c.success).length }}</strong> / {{ wizardChannels.length }} 通道
+            </span>
+          </div>
+
+          <div class="channel-grid">
+            <div v-for="ch in wizardChannels" :key="ch.channel" class="channel-card" :class="{ 'card-success': ch.success, 'card-failed': !ch.success }">
               <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
-                <input v-if="r.success" type="checkbox" :checked="wizardSelected.includes(r.channel)" @change="toggleSelect(r.channel)" />
-                <span class="device-name">通道 {{ r.channel }}</span>
-                <span v-if="r.success" class="badge badge-green">成功</span>
+                <input v-if="ch.success" type="checkbox" :checked="wizardSelected.includes(ch.channel)" @change="toggleSelect(ch.channel)" />
+                <span class="device-name">通道 {{ ch.channel }}</span>
+                <span v-if="ch.success" class="badge badge-green">成功</span>
                 <span v-else class="badge badge-red">失败</span>
               </div>
-              <div class="device-info" style="margin-bottom:8px; word-break:break-all;">{{ r.url }}</div>
-              <div v-if="r.success && r.snapshot_base64" style="text-align:center;">
-                <img :src="'data:image/jpeg;base64,' + r.snapshot_base64" style="max-width:100%; max-height:180px; border-radius:6px;" />
+              <div v-if="ch.success && ch.snapshot_base64" class="snapshot-box">
+                <img :src="'data:image/jpeg;base64,' + ch.snapshot_base64" />
               </div>
-              <div v-if="!r.success && r.error" class="hint-box" style="margin-top:8px; font-size:12px;">{{ r.error }}</div>
+              <div v-if="!ch.success && ch.error" class="hint-box" style="margin-top:8px; font-size:11px; padding:6px 8px;">{{ ch.error }}</div>
             </div>
           </div>
 
           <div class="modal-actions">
             <button @click="saveWizardTools" :disabled="wizardSelected.length === 0">保存选中 ({{ wizardSelected.length }})</button>
-            <button class="btn-secondary" @click="wizardStep = 2">返回</button>
+            <button class="btn-secondary" @click="wizardStep = 1">返回修改凭据</button>
             <button class="btn-secondary" @click="showWizard = false">关闭</button>
           </div>
         </div>
@@ -511,7 +485,7 @@ button:disabled { opacity: 0.6; cursor: default; }
 .btn-wizard { background: #2e5c8b; color: #fff; }
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 100; overflow: auto; padding: 40px 0; }
 .modal { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 24px; width: 640px; max-width: 90vw; }
-.modal-wide { width: 800px; }
+.modal-wide { width: 900px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; }
 .field { display: flex; flex-direction: column; gap: 4px; }
 .field label { font-size: 12px; color: #888; }
@@ -553,5 +527,18 @@ button:disabled { opacity: 0.6; cursor: default; }
 @keyframes progress {
   0% { transform: translateX(-100%); }
   100% { transform: translateX(400%); }
+}
+
+/* 通道网格 */
+.channel-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; max-height: 520px; overflow-y: auto; padding-right: 4px; }
+.channel-card { background: #1e1e1e; border: 1px solid #3a3a3a; border-radius: 8px; padding: 10px; }
+.snapshot-box { text-align: center; background: #151515; border-radius: 6px; padding: 4px; }
+.snapshot-box img { max-width: 100%; max-height: 120px; border-radius: 4px; }
+
+@media (max-width: 900px) {
+  .channel-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 600px) {
+  .channel-grid { grid-template-columns: 1fr; }
 }
 </style>
