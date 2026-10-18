@@ -610,17 +610,45 @@ pub async fn probe_device(body: web::Json<ProbeRequest>) -> Result<HttpResponse>
 
     log::info!("开始探测设备: {}，账号: {}", ip, username);
 
+    // 阶段0：HTTP 辅助探测 — 通过 Web 接口识别品牌和型号
+    let http_brand = http_probe_brand(ip).await;
+    if let Some(ref b) = http_brand {
+        log::info!("HTTP 辅助探测识别到品牌: {}", b);
+    }
+
     // 阶段1：并发尝试所有 Strix 模式的通道 1-4，确定品牌和 URL 模式
     // 不能只试通道1，因为NVR的通道1可能恰好没有接摄像头（离线）
     let patterns = strix::get_patterns();
     let mut detected_pattern: Option<String> = None;
 
-    log::info!("阶段1：并发尝试 {} 种 Strix URL 模式的通道 1-4...", patterns.len());
+    // 如果 HTTP 识别出品牌，优先尝试该品牌的模式
+    let ordered_patterns: Vec<_> = if let Some(ref brand) = http_brand {
+        let mut ordered = Vec::new();
+        let brand_lower = brand.to_lowercase();
+        for p in &patterns {
+            let p_brand = strix::guess_brand_from_pattern(&p.name).to_lowercase();
+            if p_brand == brand_lower || p.name.to_lowercase().contains(&brand_lower) {
+                ordered.push(p.clone());
+            }
+        }
+        // 再把其他模式追加到后面
+        for p in &patterns {
+            let p_brand = strix::guess_brand_from_pattern(&p.name).to_lowercase();
+            if p_brand != brand_lower && !p.name.to_lowercase().contains(&brand_lower) {
+                ordered.push(p.clone());
+            }
+        }
+        ordered
+    } else {
+        patterns.clone()
+    };
+
+    log::info!("阶段1：并发尝试 {} 种 Strix URL 模式的通道 1-4...", ordered_patterns.len());
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(8));
     let mut handles = Vec::new();
 
-    for pattern in patterns.iter() {
+    for pattern in ordered_patterns.iter() {
         let pattern_name = pattern.name.clone();
         let template = pattern.template.clone();
         let sem = semaphore.clone();
@@ -680,7 +708,7 @@ pub async fn probe_device(body: web::Json<ProbeRequest>) -> Result<HttpResponse>
         Some(pattern_name) => {
             let brand = strix::guess_brand_from_pattern(&pattern_name);
             // 找到该品牌的主码流模板
-            let main = patterns.iter()
+            let main = ordered_patterns.iter()
                 .find(|p| p.name == pattern_name || (strix::guess_brand_from_pattern(&p.name) == brand && p.stream_type == "main"))
                 .cloned();
             (brand, main)
@@ -771,6 +799,111 @@ pub async fn probe_device(body: web::Json<ProbeRequest>) -> Result<HttpResponse>
     })))
 }
 
+/// HTTP 辅助探测：通过设备的 Web 接口识别品牌
+async fn http_probe_brand(ip: &str) -> Option<String> {
+    let ports = vec![80u16, 8000, 8080];
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+
+    for port in ports {
+        let url = format!("http://{}:{}/", ip, port);
+        if let Ok(resp) = client.get(&url).send().await {
+            // 检查 Server 头
+            if let Some(server) = resp.headers().get("server").and_then(|v| v.to_str().ok()) {
+                let s = server.to_lowercase();
+                if s.contains("hikvision") || s.contains("dvr") || s.contains("nvr") {
+                    return Some("hikvision".to_string());
+                }
+                if s.contains("dahua") {
+                    return Some("dahua".to_string());
+                }
+                if s.contains("tp-link") || s.contains("tplink") {
+                    return Some("tp-link".to_string());
+                }
+                if s.contains("axis") {
+                    return Some("axis".to_string());
+                }
+                if s.contains("bosch") {
+                    return Some("bosch".to_string());
+                }
+            }
+
+            // 检查响应体中的品牌标识
+            if let Ok(text) = resp.text().await {
+                let t = text.to_lowercase();
+                if t.contains("hikvision") || t.contains("海康威视") {
+                    return Some("hikvision".to_string());
+                }
+                if t.contains("dahua") || t.contains("大华") {
+                    return Some("dahua".to_string());
+                }
+                if t.contains("ezviz") || t.contains("萤石") {
+                    return Some("ezviz".to_string());
+                }
+                if t.contains("uniview") || t.contains("unv") || t.contains("宇视") {
+                    return Some("uniview".to_string());
+                }
+                if t.contains("tp-link") || t.contains("tplink") {
+                    return Some("tp-link".to_string());
+                }
+                if t.contains("imou") || t.contains("乐橙") {
+                    return Some("imou".to_string());
+                }
+                if t.contains("xiaomi") || t.contains("小米") || t.contains("米家") {
+                    return Some("xiaomi".to_string());
+                }
+                if t.contains("huawei") || t.contains("华为") || t.contains("hilook") {
+                    return Some("huawei".to_string());
+                }
+                if t.contains("reolink") {
+                    return Some("reolink".to_string());
+                }
+                if t.contains("foscam") {
+                    return Some("foscam".to_string());
+                }
+                if t.contains("amcrest") {
+                    return Some("amcrest".to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// 手动验证单个 RTSP URL
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct VerifyUrlRequest {
+    pub url: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct VerifyUrlResult {
+    pub url: String,
+    pub success: bool,
+    pub snapshot_base64: Option<String>,
+    pub error: Option<String>,
+}
+
+#[post("/api/tools/verify-url")]
+pub async fn verify_rtsp_url_endpoint(body: web::Json<VerifyUrlRequest>) -> Result<HttpResponse> {
+    let url = &body.url;
+    log::info!("手动验证 RTSP URL: {}", url);
+
+    let (success, snapshot, error) = verify_rtsp_url(url, 1).await;
+
+    Ok(HttpResponse::Ok().json(ApiResponse::ok(VerifyUrlResult {
+        url: url.clone(),
+        success,
+        snapshot_base64: snapshot,
+        error,
+    })))
+}
 
 /// 猜测设备品牌
 async fn guess_brand(ip: &str, ports: &[u16]) -> Option<String> {

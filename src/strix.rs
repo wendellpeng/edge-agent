@@ -358,6 +358,220 @@ fn built_in_popular_patterns() -> Vec<RtspPattern> {
             template: "rtsp://{user}:{pass}@{ip}:554/".into(),
             stream_type: "main".into(),
         },
+        // ===== 萤石 / EZVIZ（海康子品牌）=====
+        RtspPattern {
+            name: "ezviz_main".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/h264/ch{channel}/main/av_stream".into(),
+            stream_type: "main".into(),
+        },
+        RtspPattern {
+            name: "ezviz_sub".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/h264/ch{channel}/sub/av_stream".into(),
+            stream_type: "sub".into(),
+        },
+        // ===== 小米 / 米家 / 小白 =====
+        RtspPattern {
+            name: "xiaomi_main".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/live/ch{channel}".into(),
+            stream_type: "main".into(),
+        },
+        RtspPattern {
+            name: "xiaomi_sub".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/live/ch{channel}_2".into(),
+            stream_type: "sub".into(),
+        },
+        // ===== 华为 / HiLook =====
+        RtspPattern {
+            name: "huawei_main".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/LiveMedia/ch{channel}/Media1".into(),
+            stream_type: "main".into(),
+        },
+        RtspPattern {
+            name: "huawei_sub".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/LiveMedia/ch{channel}/Media2".into(),
+            stream_type: "sub".into(),
+        },
+        // ===== 乐橙 / Imou（大华子品牌）=====
+        RtspPattern {
+            name: "imou_main".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/cam/realmonitor?channel={channel}&subtype=0".into(),
+            stream_type: "main".into(),
+        },
+        RtspPattern {
+            name: "imou_sub".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/cam/realmonitor?channel={channel}&subtype=1".into(),
+            stream_type: "sub".into(),
+        },
+        // ===== 360 =====
+        RtspPattern {
+            name: "360_main".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/live/ch{channel}".into(),
+            stream_type: "main".into(),
+        },
+        // ===== 乔安 / Jooan =====
+        RtspPattern {
+            name: "jooan_main".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/user={user}&password={pass}&channel={channel}&stream=0.sdp?".into(),
+            stream_type: "main".into(),
+        },
+        // ===== 沃仕达 / Wanscam =====
+        RtspPattern {
+            name: "wanscam_main".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/live{channel}.sdp".into(),
+            stream_type: "main".into(),
+        },
+        // ===== 帝防 / Defeway =====
+        RtspPattern {
+            name: "defeway_main".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/user={user}_password={pass}_channel={channel}_stream=0.sdp".into(),
+            stream_type: "main".into(),
+        },
+        // ===== 更多海康变体（不同固件版本路径差异）=====
+        RtspPattern {
+            name: "hikvision_alt1".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/Streaming/Channels/{channel}".into(),
+            stream_type: "main".into(),
+        },
+        RtspPattern {
+            name: "hikvision_alt2".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/streaming/channels/{channel}01".into(),
+            stream_type: "main".into(),
+        },
+        RtspPattern {
+            name: "hikvision_alt3".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/PSIA/streaming/channels/{channel}01".into(),
+            stream_type: "main".into(),
+        },
+        // ===== 更多大华变体 =====
+        RtspPattern {
+            name: "dahua_alt1".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/live/ch{channel}".into(),
+            stream_type: "main".into(),
+        },
+        RtspPattern {
+            name: "dahua_alt2".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/cam/realmonitor?channel={channel}&subtype=0&unicast=true&proto=Onvif".into(),
+            stream_type: "main".into(),
+        },
+        // ===== 更多通用变体（无通道号 / 固定路径）=====
+        RtspPattern {
+            name: "generic_stream1".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/stream1".into(),
+            stream_type: "main".into(),
+        },
+        RtspPattern {
+            name: "generic_stream2".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/stream2".into(),
+            stream_type: "sub".into(),
+        },
+        RtspPattern {
+            name: "generic_live1".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/live1".into(),
+            stream_type: "main".into(),
+        },
+        RtspPattern {
+            name: "generic_live2".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/live2".into(),
+            stream_type: "sub".into(),
+        },
+        RtspPattern {
+            name: "generic_video1".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/video1".into(),
+            stream_type: "main".into(),
+        },
+        RtspPattern {
+            name: "generic_video2".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/video2".into(),
+            stream_type: "sub".into(),
+        },
+        RtspPattern {
+            name: "generic_h264_1".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/h264_1".into(),
+            stream_type: "main".into(),
+        },
+        RtspPattern {
+            name: "generic_h264_2".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/h264_2".into(),
+            stream_type: "sub".into(),
+        },
+        RtspPattern {
+            name: "generic_0".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/0".into(),
+            stream_type: "main".into(),
+        },
+        RtspPattern {
+            name: "generic_1".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/1".into(),
+            stream_type: "main".into(),
+        },
+        RtspPattern {
+            name: "generic_11".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/11".into(),
+            stream_type: "main".into(),
+        },
+        // ===== ONVIF 标准 Profile 变体 =====
+        RtspPattern {
+            name: "onvif_profile_main".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/profile1".into(),
+            stream_type: "main".into(),
+        },
+        RtspPattern {
+            name: "onvif_profile_sub".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/profile2".into(),
+            stream_type: "sub".into(),
+        },
+        RtspPattern {
+            name: "onvif_profile3".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/profile3".into(),
+            stream_type: "main".into(),
+        },
+        RtspPattern {
+            name: "onvif_profile4".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/profile4".into(),
+            stream_type: "sub".into(),
+        },
+        // ===== 海康 ISAPI 变体 =====
+        RtspPattern {
+            name: "hikvision_isapi".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/ISAPI/Streaming/channels/{channel}01".into(),
+            stream_type: "main".into(),
+        },
+        RtspPattern {
+            name: "hikvision_isapi2".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/ISAPI/ContentMgmt/StreamingProxy/channels/{channel}01".into(),
+            stream_type: "main".into(),
+        },
+        // ===== 更多品牌变体 =====
+        RtspPattern {
+            name: "tvt_alt".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/streaming/channels/{channel}01".into(),
+            stream_type: "main".into(),
+        },
+        RtspPattern {
+            name: "samsung_alt".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/profile{channel}/media.smp".into(),
+            stream_type: "main".into(),
+        },
+        RtspPattern {
+            name: "axis_alt".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/axis-media/media.amp".into(),
+            stream_type: "main".into(),
+        },
+        RtspPattern {
+            name: "vivotek_alt".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/live.sdp".into(),
+            stream_type: "main".into(),
+        },
+        RtspPattern {
+            name: "bosch_alt".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/video".into(),
+            stream_type: "main".into(),
+        },
+        RtspPattern {
+            name: "genetec_alt".into(),
+            template: "rtsp://{user}:{pass}@{ip}:554/".into(),
+            stream_type: "main".into(),
+        },
     ]
 }
 
@@ -413,6 +627,22 @@ pub fn guess_brand_from_pattern(pattern_name: &str) -> String {
         "foscam".into()
     } else if pattern_name.starts_with("dlink") {
         "dlink".into()
+    } else if pattern_name.starts_with("ezviz") {
+        "ezviz".into()
+    } else if pattern_name.starts_with("xiaomi") {
+        "xiaomi".into()
+    } else if pattern_name.starts_with("huawei") {
+        "huawei".into()
+    } else if pattern_name.starts_with("imou") {
+        "imou".into()
+    } else if pattern_name.starts_with("360") {
+        "360".into()
+    } else if pattern_name.starts_with("jooan") {
+        "jooan".into()
+    } else if pattern_name.starts_with("wanscam") {
+        "wanscam".into()
+    } else if pattern_name.starts_with("defeway") {
+        "defeway".into()
     } else if pattern_name.starts_with("edimax") {
         "edimax".into()
     } else if pattern_name.starts_with("genetec") {

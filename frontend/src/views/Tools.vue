@@ -30,6 +30,11 @@ const wizardSelected = ref([]);
 const wizardProbeLog = ref([]);
 const showProbeLog = ref(false);
 
+// 手动验证
+const manualUrl = ref("");
+const manualVerifying = ref(false);
+const manualResult = ref(null);
+
 const form = ref({
   id: 0, tool_type: "onvif_camera", name: "", endpoint: "", xaddr: "",
   location: "", username: "", password: "", channel: 1, brand: "", enabled: true,
@@ -262,6 +267,45 @@ function toggleSelect(channel) {
   }
 }
 
+async function verifyManualUrl() {
+  if (!manualUrl.value) return;
+  manualVerifying.value = true;
+  manualResult.value = null;
+  try {
+    const result = await api.verifyRtspUrl({ url: manualUrl.value });
+    manualResult.value = result;
+  } catch (e) {
+    manualResult.value = { success: false, error: e.message };
+  } finally {
+    manualVerifying.value = false;
+  }
+}
+
+function saveManualTool() {
+  if (!manualResult.value || !manualResult.value.success) return;
+  const url = manualUrl.value;
+  // 从URL中提取通道号（如果可能）
+  const chMatch = url.match(/channel[=/](\d+)|ch(\d+)|Channels\/(\d+)|stream(\d+)|video(\d+)|\/(\d+)$/);
+  const channel = chMatch ? parseInt(chMatch[1] || chMatch[2] || chMatch[3] || chMatch[4] || chMatch[5] || chMatch[6]) : 1;
+
+  const tool = {
+    tool_type: "rtsp_camera",
+    name: `手动添加 ${extractIp(url) || '未知IP'} 通道${channel}`,
+    endpoint: url,
+    xaddr: "",
+    location: "",
+    username: wizardUsername.value,
+    password: wizardPassword.value,
+    channel: channel,
+    brand: "manual",
+    enabled: true,
+  };
+  api.addTool(tool).then(() => {
+    showWizard.value = false;
+    load();
+  }).catch(e => alert("保存失败: " + e));
+}
+
 onMounted(() => {
   load();
   loadTemplates();
@@ -416,6 +460,30 @@ onMounted(() => {
             <button @click="saveWizardTools" :disabled="wizardSelected.length === 0">保存选中 ({{ wizardSelected.length }})</button>
             <button class="btn-secondary" @click="wizardStep = 1">返回修改凭据</button>
             <button class="btn-secondary" @click="showWizard = false">关闭</button>
+          </div>
+
+          <!-- 手动验证兜底：自动探测全部失败时显示 -->
+          <div v-if="wizardChannels.filter(c=>c.success).length === 0" style="margin-top:20px; padding:16px; background:#1a1a1a; border:1px solid #333; border-radius:8px;">
+            <h4 style="margin:0 0 10px; color:#e8e8e8; font-size:14px;">自动探测未成功 — 手动验证</h4>
+            <p style="color:#888; font-size:12px; margin-bottom:10px;">如果已知设备的 RTSP URL，可直接输入验证：</p>
+            <div style="display:flex; gap:8px; margin-bottom:10px;">
+              <input v-model="manualUrl" placeholder="rtsp://admin:pass@192.168.0.104:554/Streaming/Channels/101" style="flex:1;" />
+              <button :disabled="manualVerifying || !manualUrl" @click="verifyManualUrl" style="white-space:nowrap;">{{ manualVerifying ? '验证中…' : '验证' }}</button>
+            </div>
+            <div v-if="manualResult" style="margin-top:10px;">
+              <div v-if="manualResult.success" style="display:flex; align-items:flex-start; gap:10px;">
+                <div style="flex:1;">
+                  <div style="color:var(--green); font-size:13px; margin-bottom:6px;">✅ 验证成功</div>
+                  <div class="snapshot-box" v-if="manualResult.snapshot_base64" style="max-width:200px;">
+                    <img :src="'data:image/jpeg;base64,' + manualResult.snapshot_base64" />
+                  </div>
+                </div>
+                <button @click="saveManualTool" style="margin-top:4px;">保存为工具</button>
+              </div>
+              <div v-else style="color:#e74c3c; font-size:12px;">
+                ❌ 验证失败: {{ manualResult.error || '未知错误' }}
+              </div>
+            </div>
           </div>
         </div>
       </div>

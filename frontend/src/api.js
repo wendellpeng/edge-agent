@@ -30,6 +30,7 @@ export const api = {
   listRtspTemplates: () => request("GET", "/api/tools/rtsp-templates"),
   generateRtspUrl: (params) => request("POST", "/api/tools/rtsp-url", params),
   probeDevice: (params) => request("POST", "/api/tools/probe", params),
+  verifyRtspUrl: (params) => request("POST", "/api/tools/verify-url", params),
 
   // 场景
   listScenarios: () => request("GET", "/api/scenarios"),
