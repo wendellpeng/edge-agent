@@ -111,6 +111,28 @@ pub fn init_db() -> SqlResult<Connection> {
         [],
     )?;
 
+    // 配置表
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS settings (
+            key             TEXT PRIMARY KEY,
+            value           TEXT NOT NULL,
+            updated_at      TEXT NOT NULL
+        )",
+        [],
+    )?;
+
+    // 初始化默认日志保留时间（90天 = 3个月）
+    let has_retention: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM settings WHERE key = 'log_retention_days'",
+        [], |row| row.get(0),
+    )?;
+    if has_retention == 0 {
+        conn.execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES ('log_retention_days', '90', ?1)",
+            [chrono::Local::now().to_rfc3339()],
+        )?;
+    }
+
     // 兼容旧表：从 cameras 迁移到 tools
     migrate_cameras_to_tools(&conn)?;
 

@@ -105,6 +105,9 @@ async fn main() -> std::io::Result<()> {
             .service(api::scenario::run_scenario)
             // 任务 API
             .service(api::task::list_tasks)
+            // 设置 API
+            .service(api::settings::get_log_retention)
+            .service(api::settings::update_log_retention)
             // 静态文件 / SPA fallback
             .route("/", web::get().to(serve_embedded))
             .route("/{filename:.*}", web::get().to(serve_embedded))

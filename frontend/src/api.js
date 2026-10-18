@@ -41,4 +41,8 @@ export const api = {
 
   // 任务
   listTasks: () => request("GET", "/api/tasks"),
+
+  // 设置
+  getLogRetention: () => request("GET", "/api/settings/log-retention"),
+  updateLogRetention: (params) => request("PUT", "/api/settings/log-retention", params),
 };

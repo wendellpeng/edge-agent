@@ -121,6 +121,31 @@ impl TaskEngine {
                 }
             }
         }
+
+        // 添加日志清理定时任务：每天凌晨 3 点执行
+        let cleanup_job = Job::new_async("0 3 * * *", move |_uuid, _l| {
+            Box::pin(async move {
+                match crate::api::settings::cleanup_old_logs() {
+                    Ok(deleted) => {
+                        if deleted > 0 {
+                            log::info!("定时日志清理完成，删除 {} 条", deleted);
+                        }
+                    }
+                    Err(e) => log::error!("定时日志清理失败: {}", e),
+                }
+            })
+        });
+        match cleanup_job {
+            Ok(job) => {
+                if let Err(e) = sched.add(job).await {
+                    log::warn!("添加日志清理定时任务失败: {}", e);
+                } else {
+                    log::info!("日志清理定时任务已添加（每天凌晨 3 点）");
+                }
+            }
+            Err(e) => log::warn!("创建日志清理定时任务失败: {}", e),
+        }
+
         Ok(())
     }
 }

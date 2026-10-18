@@ -1,5 +1,6 @@
 pub mod credential;
 pub mod scenario;
+pub mod settings;
 pub mod task;
 pub mod tool;
 

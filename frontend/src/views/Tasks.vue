@@ -7,9 +7,43 @@ const loading = ref(false);
 const showDetail = ref(false);
 const detailLog = ref(null);
 
+// 日志保留配置
+const retentionDays = ref(90);
+const retentionLabel = ref("3个月");
+const savingRetention = ref(false);
+
+const retentionOptions = [
+  { days: 30, label: "1个月" },
+  { days: 90, label: "3个月" },
+  { days: 180, label: "半年" },
+];
+
 async function load() {
   loading.value = true;
   try { logs.value = await api.listTasks(); } finally { loading.value = false; }
+}
+
+async function loadRetention() {
+  try {
+    const result = await api.getLogRetention();
+    retentionDays.value = result.days;
+    retentionLabel.value = result.label;
+  } catch (e) {
+    console.error("加载日志保留配置失败:", e);
+  }
+}
+
+async function saveRetention(days) {
+  savingRetention.value = true;
+  try {
+    const result = await api.updateLogRetention({ days });
+    retentionDays.value = result.days;
+    retentionLabel.value = result.label;
+  } catch (e) {
+    alert("保存失败: " + e);
+  } finally {
+    savingRetention.value = false;
+  }
 }
 
 function statusClass(s) {
@@ -27,12 +61,34 @@ function prettyJson(str) {
   try { return JSON.stringify(JSON.parse(str), null, 2); } catch { return str || "-"; }
 }
 
-onMounted(load);
+onMounted(() => {
+  load();
+  loadRetention();
+});
 </script>
 
 <template>
   <div>
     <header><h1>任务监控</h1><p class="sub">场景执行记录与详情分析</p></header>
+
+    <!-- 日志保留配置 -->
+    <div class="retention-bar">
+      <span class="retention-label">日志保留时间：</span>
+      <span class="retention-current">{{ retentionLabel }}</span>
+      <div class="retention-options">
+        <button
+          v-for="opt in retentionOptions"
+          :key="opt.days"
+          :class="['retention-btn', retentionDays === opt.days ? 'active' : '']"
+          :disabled="savingRetention"
+          @click="saveRetention(opt.days)"
+        >
+          {{ opt.label }}
+        </button>
+      </div>
+      <span v-if="savingRetention" class="retention-hint">保存中…</span>
+    </div>
+
     <section class="toolbar">
       <button @click="load" :disabled="loading">{{ loading ? "刷新中…" : "刷新" }}</button>
     </section>
@@ -97,6 +153,41 @@ onMounted(load);
 <style scoped>
 header h1 { font-size: 20px; margin: 0 0 4px; }
 .sub { color: #888; font-size: 13px; margin: 0 0 16px; }
+
+/* 日志保留配置 */
+.retention-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.retention-label { color: #888; }
+.retention-current { color: var(--green); font-weight: 600; }
+.retention-options { display: flex; gap: 6px; }
+.retention-btn {
+  background: #2a2a2a;
+  color: #ccc;
+  border: 1px solid #444;
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.retention-btn:hover { background: #333; border-color: #555; }
+.retention-btn.active {
+  background: rgba(124,179,66,0.2);
+  color: var(--green);
+  border-color: var(--green);
+}
+.retention-btn:disabled { opacity: 0.5; cursor: default; }
+.retention-hint { color: #888; font-size: 12px; margin-left: 4px; }
+
 .toolbar { display: flex; gap: 10px; margin-bottom: 16px; }
 button { background: var(--green); color: #10240a; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; }
 button:disabled { opacity: 0.6; cursor: default; }
