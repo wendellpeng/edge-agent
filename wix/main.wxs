@@ -78,7 +78,7 @@
     <!-- Custom Actions: Service Install/Uninstall -->
     <CustomAction Id="InstallServiceCA"
                   Directory="INSTALLDIR"
-                  ExeCommand="[SystemFolder]sc.exe create EdgeAgent binPath= &quot;[INSTALLDIR]edge-agent.exe&quot; start= auto displayname= &quot;Edge Agent&quot;"
+                  ExeCommand="[SystemFolder]sc.exe create EdgeAgent binPath= &quot;\&quot;[INSTALLDIR]edge-agent.exe\&quot;&quot; start= auto displayname= &quot;Edge Agent&quot;"
                   Execute="deferred"
                   Return="check"
                   Impersonate="no" />
